@@ -18,6 +18,11 @@ DEFAULT_VARIATIONS = (
 )
 
 
+def _undamped_velocity(body, gravity, damping, dt):
+    """pymunk velocity_func that ignores the space's damping for one body."""
+    pymunk.Body.update_velocity(body, gravity, 1.0, dt)
+
+
 class PushT(gym.Env):
     metadata = {
         'render_modes': ['human', 'rgb_array'],
@@ -31,6 +36,7 @@ class PushT(gym.Env):
         block_cog=None,
         damping=None,
         render_action=False,
+        render_contacts=False,  # pusht-scenarios: swm draws contact points; True = swm's frames
         resolution=224,
         with_target=True,
         render_mode='rgb_array',
@@ -289,6 +295,7 @@ class PushT(gym.Env):
         self.block_cog = block_cog
         self.damping = damping
         self.render_action = render_action
+        self.render_contacts = render_contacts
         self.render_mode = render_mode
 
         """
@@ -330,6 +337,7 @@ class PushT(gym.Env):
             self.block.center_of_gravity = self.block_cog
         if self.damping is not None:
             self.space.damping = self.damping
+        self._apply_sim()
 
         ### get the state
         if options is not None and 'goal_state' in options:
@@ -395,12 +403,14 @@ class PushT(gym.Env):
             action = self.agent.position + action * self.action_scale
             # action = np.clip(action, 0, self.window_size)
 
+        # the agent itself (swm), or with sim.agent_max_force its control body
+        driver = self.agent_driver
         for _ in range(n_steps):
             # Step PD control.
             acceleration = self.k_p * (
-                action - self.agent.position
-            ) + self.k_v * (Vec2d(0, 0) - self.agent.velocity)
-            self.agent.velocity += acceleration * self.dt
+                action - driver.position
+            ) + self.k_v * (Vec2d(0, 0) - driver.velocity)
+            driver.velocity += acceleration * self.dt
 
             # Step physics.
             self.space.step(self.dt)
@@ -504,7 +514,7 @@ class PushT(gym.Env):
 
         self.screen = canvas
 
-        draw_options = DrawOptions(canvas)
+        draw_options = DrawOptions(canvas, draw_contacts=self.render_contacts)
 
         # Draw goal pose (optional).
         render_goal = (
@@ -607,11 +617,148 @@ class PushT(gym.Env):
         vel_block = tuple(state[-2:]) if len(state) == 7 else (0.0, 0.0)
         self.agent.velocity = vel_block
         self.agent.position = pos_agent
+        if self.agent_driver is not self.agent:
+            self.agent_driver.velocity = vel_block
+            self.agent_driver.position = pos_agent
         self.block.angle = rot_block
         self.block.position = pos_block
+        # state has no block velocity: a set state is at rest. A no-op under
+        # swm's damping=0 (velocity is zeroed every substep anyway), but keeps
+        # momentum from leaking across teleports when sim.damping > 0.
+        self.block.velocity = (0.0, 0.0)
+        self.block.angular_velocity = 0.0
 
         # Run physics to take effect
         self.space.step(self.dt)
+
+    AGENT_MASS = 1.0  # agent mass is not a variation (user decision)
+
+    # Floor friction scale: a friction coefficient mu decelerates a sliding
+    # block at mu * FLOOR_G px/s^2 (mu=1 stops a 250 px/s slide in 0.25 s).
+    FLOOR_G = 1000.0
+
+    def _apply_sim(self):
+        """Apply the 'sim' physics variations to the space _setup() just built.
+
+        Every knob is skipped at its default, so the default world is exactly
+        swm's (tests/test_parity.py).
+        """
+        sim = self.variation_space['sim']
+        block = self.block
+        self.agent_driver = self.agent  # body the PD controller drives
+
+        damping = float(sim['damping'].value)
+        if damping != 0.0:
+            # fraction of velocity kept per second; swm's 0 = no momentum
+            self.space.damping = damping
+
+        # pymunk multiplies the two shapes' frictions, so agent = walls = 1 and
+        # block = mu makes both agent-block and block-wall contacts mu.
+        mu = float(sim['contact_friction'].value)
+        if mu != 0.0:
+            for shape in [*self.agent.shapes, *self.space.static_body.shapes]:
+                shape.friction = 1.0
+            for shape in block.shapes:
+                shape.friction = mu
+
+        # offset from the shape's own CoG, in block-local px. Keeps swm's
+        # moment of inertia; only the pivot point moves.
+        offset = sim['block_cog_offset'].value
+        if np.any(offset != 0):
+            block.center_of_gravity = block.center_of_gravity + Vec2d(*offset)
+
+        # before the friction caps, which scale with mass. The moment was
+        # computed for mass 1, so it scales linearly.
+        mass = float(sim['block_mass'].value)
+        if mass != 1.0:
+            block.moment = block.moment * mass
+            block.mass = mass
+
+        # Coulomb floor friction: a joint to the floor that never pulls toward
+        # a position (max_bias=0), only resists motion, up to mu * m * g.
+        # Anchored at the CoG so it adds no torque.
+        mu_floor = float(sim['floor_friction'].value)
+        if mu_floor != 0.0:
+            joint = pymunk.PivotJoint(
+                self.space.static_body, block, (0, 0), block.center_of_gravity
+            )
+            joint.max_bias = 0
+            joint.max_force = mu_floor * block.mass * self.FLOOR_G
+            self.space.add(joint)
+
+        # Rotational friction. A single friction point at the CoG can't resist
+        # spin, but real floor friction acts over the whole contact patch, so
+        # floor_friction also brakes rotation; angular_friction adds extra spin
+        # resistance on top. Torque cap (mu_floor + mu_rot) * m * g * r, with
+        # r = the block's scale (its size, ~30 px).
+        mu_rot = float(sim['angular_friction'].value)
+        if mu_floor != 0.0 or mu_rot != 0.0:
+            gear = pymunk.GearJoint(self.space.static_body, block, 0.0, 1.0)
+            gear.max_bias = 0
+            gear.max_force = (
+                (mu_floor + mu_rot)
+                * block.mass
+                * self.FLOOR_G
+                * float(self.variation_space['block']['scale'].value)
+            )
+            self.space.add(gear)
+
+        # Finite agent strength. swm's agent is kinematic (infinite strength),
+        # so nothing resists it and block mass cancels out. Here the PD
+        # controller drives an invisible kinematic control body instead, which
+        # moves exactly like swm's agent, and the visible agent is a dynamic
+        # body pulled to it by a joint capped at max_force. Against a heavy or
+        # high-friction block the agent lags behind, so the block feels heavy.
+        # With damping 0 (swm), pushing a block of mass m at speed v takes
+        # force ~ m * v / dt, so max push speed is about max_force * dt / m.
+        max_force = float(sim['agent_max_force'].value)
+        if max_force != 0.0:
+            agent = self.agent
+            agent.body_type = pymunk.Body.DYNAMIC
+            agent.mass = self.AGENT_MASS
+            agent.moment = float('inf')  # the disc doesn't need to spin
+            # the agent ignores the floor's damping; its motion comes from the
+            # joint, so the old kinematic behavior is the max_force -> inf limit
+            agent.velocity_func = _undamped_velocity
+
+            control = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+            control.position = agent.position
+            leash = pymunk.PivotJoint(control, agent, (0, 0), (0, 0))
+            leash.max_force = max_force
+            leash.collide_bodies = False
+            self.space.add(control, leash)
+            self.agent_driver = control
+
+    # Variation keys that describe the start pose; a dataset's `state` column
+    # is the true start (augmented episodes place it directly), so these are
+    # neither exported nor restored from a dataset.
+    START_POSE_KEYS = (
+        'agent.start_position', 'agent.velocity', 'block.start_position', 'block.angle',
+    )
+
+    def reset_options_from_dataset(self, init_row, goal_row):
+        """Reset options that rebuild a dataset episode for swm's dataset eval
+        (World.evaluate(dataset=...) calls this when the env defines it).
+
+        init_row: the first step of the eval window (columns as exported by
+        pusht_scenarios.export): `variation.<key>` columns restore the
+        condition, `state` the start pose. goal_row: the window's last step;
+        `goal_state` becomes the goal (swm's eval_state: agent + block).
+        """
+        from pusht_scenarios.env.variations import cast_values
+
+        prefix = 'variation.'
+        values = {
+            key[len(prefix):]: np.asarray(value).tolist()
+            for key, value in init_row.items()
+            if key.startswith(prefix) and key[len(prefix):] not in self.START_POSE_KEYS
+        }
+        options = {'variation': [], 'variation_values': cast_values(self, values)}
+        if 'state' in init_row:
+            options['state'] = np.asarray(init_row['state'], dtype=np.float64)
+        if 'goal_state' in goal_row:
+            options['goal_state'] = np.asarray(goal_row['goal_state'], dtype=np.float64)
+        return options
 
     def _set_goal_state(self, goal_state):
         self.goal_state = goal_state

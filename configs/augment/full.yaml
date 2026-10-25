@@ -1,0 +1,31 @@
+# Full augmentation, DINO-WM style.
+#   uv run pts-augment -c configs/augment/full.yaml
+#
+# Per parent: 4 bases (original, 2 random SE(2), left-right mirror) x 101 noisy
+# copies (DINO-WM's measured levels) = 404 demos; 75 parents -> ~30k demos,
+# about the size of LeWM's 18.7k-episode Push-T set. ~26 simulations/s per
+# core, so a few minutes on a laptop with all cores.
+#
+# Noise copies keep the parent's length, run open loop, and are judged at the
+# final step; failures are kept (outcome=failure) for world-model coverage.
+# Visible factors (colors) are opt-in per split: no palettes here, see
+# augment_sample.yaml for the syntax.
+
+name: demo_v1
+sources: [data/raw]
+output_root: data/aug
+seed: 0
+include_rejected: false
+include_failures: true
+
+bases:
+  original: true
+  rotations_deg: []
+  se2: {count: 2, rotation_deg: [-180, 180], shift_px: [-60, 60], max_tries: 25}
+  mirror_axes_deg: [90]
+
+palettes:
+  apply_to: original
+  palettes: {}
+
+noise: dino_wm    # 11 x 0.0, then 10 each of 0.003 0.005 0.01 0.015 0.02 0.025 0.03 0.07 0.15

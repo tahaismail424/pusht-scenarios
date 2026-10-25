@@ -31,7 +31,7 @@ def reset_options(name, ref):
 
 
 def make_pair():
-    ours = gym.make('pts/PushT-v0')
+    ours = gym.make('pts/PushT-v0', render_contacts=True)  # swm draws contact points
     ref = gym.make('swm/PushT-v1')
     return ours, ref
 

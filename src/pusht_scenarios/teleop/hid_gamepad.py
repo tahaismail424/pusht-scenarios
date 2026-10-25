@@ -13,6 +13,17 @@
 from dataclasses import dataclass
 
 GENERIC_DESKTOP, BUTTON_PAGE = 0x01, 0x09
+
+# Button names -> indices, SDL GameController vocabulary. Raw HID has no
+# standard layout; this is the common Android/"D-input" HID gamepad layout
+# (8BitDo and others): A B C X Y Z L1 R1 L2 R2 Select Start Home L3 R3.
+# Unverified for any specific pad; check with `uv run pts-buttons`.
+ANDROID_HID_LAYOUT = {
+    'a': 0, 'b': 1, 'x': 3, 'y': 4,
+    'leftshoulder': 6, 'rightshoulder': 7,
+    'back': 10, 'start': 11, 'guide': 12,
+    'leftstick': 13, 'rightstick': 14,
+}
 GAMEPAD_USAGES = (0x04, 0x05)  # joystick, gamepad
 AXIS_ORDER = (0x30, 0x31, 0x32, 0x33, 0x34, 0x35)  # X Y Z Rx Ry Rz
 
@@ -99,10 +110,14 @@ def _read_bits(payload: bytes, offset: int, size: int) -> int:
 
 
 class HIDGamepad:
-    def __init__(self, device, descriptor: bytes, name: str = 'HID gamepad'):
-        """device: an opened hid.device (or a stand-in with read(n))."""
+    def __init__(
+        self, device, descriptor: bytes, name: str = 'HID gamepad', layout=None
+    ):
+        """device: an opened hid.device (or a stand-in with read(n)).
+        layout: button name -> index (default ANDROID_HID_LAYOUT)."""
         self.device = device
         self.name = name
+        self.layout = dict(ANDROID_HID_LAYOUT if layout is None else layout)
         fields = parse_report_descriptor(descriptor)
         self.numbered = any(f.report_id for f in fields)
         self.axes = sorted(
@@ -147,6 +162,12 @@ class HIDGamepad:
         self.poll()
         f = self.buttons.get(i)
         return bool(f and self._value(f))
+
+    def get_numbuttons(self) -> int:
+        return len(self.buttons)
+
+    def button_names(self) -> dict[str, int]:
+        return dict(self.layout)
 
 
 def open_first_gamepad():

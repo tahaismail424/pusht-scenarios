@@ -116,3 +116,56 @@ def test_mouse_agent_converges_to_cursor(env):
         env.step(device.read(env))
     # the block may get in the way, but the agent should end up near the cursor
     assert np.linalg.norm(np.array(env.unwrapped.agent.position) - target) < 30
+
+
+# Named precision buttons (SDL GameController vocabulary)
+
+
+class NamedFakeJoystick(FakeJoystick):
+    def button_names(self):
+        return {'a': 0, 'rightshoulder': 10}
+
+
+def test_precision_button_by_name(env):
+    pad = NamedFakeJoystick(1.0, 0.0, buttons={10})
+    device = InputDevice(joystick=pad, gain=0.3, precision_gain=0.1, precision_button='rightshoulder')
+    assert device.precision_index == 10
+    np.testing.assert_allclose(device.read(env), [0.1, 0.0], atol=1e-6)
+
+
+def test_unresolvable_button_disables_precision(env):
+    # no name mapping on this pad: precision off, stick still works
+    device = InputDevice(joystick=FakeJoystick(1.0, 0.0, buttons={10}), gain=0.3,
+                         precision_button='rightshoulder')
+    assert device.precision_index is None
+    np.testing.assert_allclose(device.read(env), [0.3, 0.0], atol=1e-6)
+
+
+def test_default_precision_button_is_rightshoulder():
+    assert InputDevice(joystick=NamedFakeJoystick()).precision_index == 10
+    assert InputDevice(joystick=NamedFakeJoystick(), precision_button=None).precision_index is None
+
+
+def test_sdl_button_names(monkeypatch):
+    from pygame._sdl2 import controller
+
+    from pusht_scenarios.teleop.input import sdl_button_names
+
+    class FakeController:
+        def __init__(self, index):
+            pass
+
+        def get_mapping(self):
+            # shape of SDL's mapping for the Switch Pro controller
+            return {'a': 'b0', 'rightshoulder': 'b10', 'lefttrigger': 'a4', 'dpup': 'b11', 'crc': 'fb56'}
+
+    class Pad:
+        def get_id(self):
+            return 0
+
+    monkeypatch.setattr(controller, 'init', lambda: None)
+    monkeypatch.setattr(controller, 'Controller', FakeController)
+    monkeypatch.setattr(controller, 'is_controller', lambda i: True)
+    assert sdl_button_names(Pad()) == {'a': 0, 'rightshoulder': 10, 'dpup': 11}
+    monkeypatch.setattr(controller, 'is_controller', lambda i: False)
+    assert sdl_button_names(Pad()) == {}

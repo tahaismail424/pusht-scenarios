@@ -1,0 +1,25 @@
+# v0 training/eval datasets from the v0 suite.
+#   uv run pts-suite build configs/suites/v0.yaml --out configs/generated/v0
+#   (record with configs/generated/v0/record.yaml, augment, curate)
+#   uv run pts-export -c configs/datasets/v0.yaml --workers 8
+#
+# Writes data/export/pusht_v0_{train,val,test_adapt,test_eval}.h5 (+ manifest).
+# Copy or symlink them into $STABLEWM_HOME/datasets/ for adaptive-wm/LeWM.
+
+name: pusht_v0
+suite: configs/generated/v0/suite.yaml   # env ids + train/test split
+sources: [data/raw, data/aug/v0]
+output_root: data/export
+resolution: 224
+seed: 0
+
+select:
+  include_rejected: false
+  include_failures: true      # augmented failures: off-expert coverage (DINO-WM kept them)
+  include_timeouts: true      # recorded timeouts: train/val only, never eval
+  max_noise: null
+
+splits:
+  val_fraction: 0.1           # of each train env's recordings (augmented copies follow their parent)
+  adapt_per_env: 2            # clean recordings per test env for test-time adaptation (T2-z: 1-2)
+  test_include_augmented: false

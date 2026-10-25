@@ -3,9 +3,11 @@
 #   uv run pts-sandbox                       # default env, 5 rounds
 #   uv run pts-sandbox -c configs/sandbox.yaml
 #
-# Keys: R = retry round, N = skip round, Space = pause, Q / Esc = quit.
+# Keys: R = retry round, N = skip round, Space = pause, Q / Esc = quit,
+#       P = queue/unqueue a pause before the next round (P again to continue).
 # A round ends when the block holds on the goal outline, or at max_steps.
 import argparse
+import random
 import time
 from dataclasses import dataclass, field
 
@@ -15,7 +17,8 @@ import pygame
 import yaml
 
 import pusht_scenarios.env  # noqa: F401  (registers pts/PushT-v0)
-from pusht_scenarios.env import task, utils
+from pusht_scenarios.env import task, variations
+from pusht_scenarios.env.bounds import KeepAgentOnBoard
 from pusht_scenarios.teleop.input import InputDevice
 
 
@@ -27,6 +30,9 @@ class Condition:
     variation: list[str] | None = None
     # fixed values, dotted keys, e.g. {'block.shape': 1, 'sim.contact_friction': 0.5}
     variation_values: dict = field(default_factory=dict)
+    rounds: int | None = None  # overrides rounds_per_condition
+    seed: int | None = None  # overrides the session seed (round i uses seed + i)
+    info: dict = field(default_factory=dict)  # stored in each demo (suite env id, split, ...)
 
 
 @dataclass
@@ -42,6 +48,9 @@ class SandboxConfig:
     angle_tol_deg: float = 20.0
     hold_steps: int = 5  # success must hold this many consecutive steps
     device: dict = field(default_factory=dict)  # InputDevice kwargs
+    # play the condition blocks in random order (seeds within a block unchanged)
+    shuffle_conditions: bool = False
+    shuffle_seed: int | None = None  # None: a fresh random order every session
 
 
 @dataclass
@@ -51,13 +60,16 @@ class RoundResult:
     outcome: str  # success | timeout | retry | skip | quit
     steps: int
     seconds: float
+    pause_after: bool = False  # P was queued: pause before the next round
 
 
-def load_config(path=None) -> SandboxConfig:
-    if path is None:
-        return SandboxConfig()
-    with open(path) as f:
-        raw = yaml.safe_load(f) or {}
+# Keys that belong to the recorder (teleop/record.py); the sandbox ignores them
+# so one YAML can drive both.
+RECORDER_KEYS = {'output'}
+
+
+def config_from_dict(raw: dict) -> SandboxConfig:
+    raw = {k: v for k, v in raw.items() if k not in RECORDER_KEYS}
     known = set(SandboxConfig.__dataclass_fields__)
     unknown = set(raw) - known
     if unknown:
@@ -68,21 +80,37 @@ def load_config(path=None) -> SandboxConfig:
         if not conditions:
             raise ValueError('conditions must not be empty')
         config.conditions = [Condition(**c) for c in conditions]
+        names = [c.name for c in config.conditions]
+        if len(set(names)) != len(names):
+            raise ValueError(f'duplicate condition names: {names}')
     return config
+
+
+def read_yaml(path) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def load_config(path=None) -> SandboxConfig:
+    if path is None:
+        return SandboxConfig()
+    return config_from_dict(read_yaml(path))
+
+
+def condition_order(config: SandboxConfig) -> list[Condition]:
+    """Conditions in play order: as listed, or shuffled (shuffle_conditions)."""
+    order = list(config.conditions)
+    if config.shuffle_conditions:
+        random.Random(config.shuffle_seed).shuffle(order)
+    return order
 
 
 def reset_options(env, condition: Condition) -> dict:
     """Build reset options, casting YAML lists/numbers to each space's dtype."""
-    space = env.unwrapped.variation_space
-    values = {}
-    for key, value in condition.variation_values.items():
-        try:
-            sub = utils.get_in(space, key.split('.'))
-        except (KeyError, TypeError):
-            raise ValueError(f'{condition.name}: unknown variation {key!r}')
-        values[key] = np.asarray(value, dtype=sub.dtype).reshape(sub.shape)
-        if values[key].shape == ():
-            values[key] = values[key][()]
+    try:
+        values = variations.cast_values(env, condition.variation_values)
+    except ValueError as e:
+        raise ValueError(f'{condition.name}: {e}') from None
     options = {'variation_values': values}
     if condition.variation is not None:
         options['variation'] = list(condition.variation)
@@ -99,6 +127,28 @@ def draw_hud(env, text):
     pygame.display.update()
 
 
+class RoundHooks:
+    """Callbacks into the round loop; the sandbox uses these no-ops, the
+    recorder (teleop/record.py) overrides them to capture demos."""
+
+    def on_round_start(self, env, condition: Condition, seed: int) -> None:
+        """Play has started (first input past the dead zone): env is in its
+        start state, no steps taken yet."""
+
+    def on_step(self, env, raw_action, info, on_goal: bool, t_wall: float) -> None:
+        """After each env.step. info['applied_action'] is the bounded action applied."""
+
+    def on_round_end(self, env, result: 'RoundResult', started: bool) -> None:
+        """Every exit: success, timeout, retry, skip, quit."""
+
+    def on_event(self, env, event) -> None:
+        """Key/joystick events the loop itself doesn't handle (e.g. U = undo)."""
+
+    def status(self) -> str:
+        """Extra text for the on-screen status line (e.g. 'saved 12')."""
+        return ''
+
+
 def run_round(
     env,
     device,
@@ -108,8 +158,11 @@ def run_round(
     label='',
     get_events=pygame.event.get,
     clock=None,
+    hooks: RoundHooks | None = None,
+    pause_queued: bool = False,
 ) -> RoundResult:
     clock = clock or pygame.time.Clock()
+    hooks = hooks or RoundHooks()
     env.reset(seed=seed, options=reset_options(env, condition))
     angle_tol = np.deg2rad(config.angle_tol_deg)
 
@@ -117,11 +170,16 @@ def run_round(
     paused = False
     steps = hold = 0
     t0 = time.monotonic()
+    if started:
+        hooks.on_round_start(env, condition, seed)
 
     def result(outcome):
-        return RoundResult(
-            condition.name, seed, outcome, steps, time.monotonic() - t0
+        r = RoundResult(
+            condition.name, seed, outcome, steps, time.monotonic() - t0,
+            pause_after=pause_queued,
         )
+        hooks.on_round_end(env, r, started)
+        return r
 
     while True:
         for event in get_events():
@@ -136,8 +194,16 @@ def run_round(
                     return result('skip')
                 if event.key == pygame.K_SPACE:
                     paused = not paused
+                elif event.key == pygame.K_p:
+                    pause_queued = not pause_queued
+                else:
+                    hooks.on_event(env, event)
+            else:
+                hooks.on_event(env, event)
 
         status = f'{label}  step {steps}/{config.max_steps}'
+        if pause_queued:
+            status += '  PAUSE QUEUED'
         if paused:
             status += '  PAUSED'
         elif not started:
@@ -145,18 +211,21 @@ def run_round(
             if device.engaged(env, action):
                 started = True
                 t0 = time.monotonic()
+                hooks.on_round_start(env, condition, seed)
             else:
                 status += '  move to start'
 
         if started and not paused:
-            env.step(device.read(env))
+            raw_action = device.read(env)
+            *_, info = env.step(raw_action)
             steps += 1
-            hold = hold + 1 if task.block_on_goal(
-                env, config.pos_tol, angle_tol
-            ) else 0
+            on_goal = task.block_on_goal(env, config.pos_tol, angle_tol)
+            hold = hold + 1 if on_goal else 0
+            hooks.on_step(env, raw_action, info, on_goal, time.monotonic() - t0)
 
+        extra = hooks.status()
         env.render()
-        draw_hud(env, status)
+        draw_hud(env, f'{status}  {extra}' if extra else status)
 
         if hold >= config.hold_steps:
             return result('success')
@@ -165,28 +234,59 @@ def run_round(
         clock.tick(config.fps)
 
 
-def run_session(config, env=None, device=None, get_events=pygame.event.get):
+def wait_between_rounds(env, next_label, get_events=pygame.event.get, clock=None, fps=10) -> bool:
+    """Hold on a pause screen until P (continue: True) or Q/Esc/close (False)."""
+    clock = clock or pygame.time.Clock()
+    while True:
+        for event in get_events():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_q, pygame.K_ESCAPE):
+                    return False
+                if event.key == pygame.K_p:
+                    return True
+        env.render()
+        draw_hud(env, f'PAUSED - press P for next: {next_label}')
+        clock.tick(fps)
+
+
+def run_session(
+    config, env=None, device=None, get_events=pygame.event.get, hooks=None
+):
     """Play every round of every condition. Retry replays the same seed."""
-    env = env or gym.make('pts/PushT-v0', render_mode='human')
+    env = env or KeepAgentOnBoard(gym.make('pts/PushT-v0', render_mode='human'))
     device = device or InputDevice(**config.device)
     results = []
     clock = pygame.time.Clock()
-    n = len(config.conditions) * config.rounds_per_condition
+
+    def rounds(c):
+        return config.rounds_per_condition if c.rounds is None else c.rounds
+
+    n = sum(rounds(c) for c in config.conditions)
+    plan = []  # (condition, round index) in play order
+    for condition in condition_order(config):
+        plan.extend((condition, i) for i in range(rounds(condition)))
+
     k = 0
-    for condition in config.conditions:
-        i = 0
-        while i < config.rounds_per_condition:
-            seed = config.seed + i
-            label = f'{condition.name}  {k + 1}/{n}  seed {seed}'
-            r = run_round(
-                env, device, condition, seed, config, label, get_events, clock
-            )
-            results.append(r)
-            if r.outcome == 'quit':
+    while k < len(plan):
+        condition, i = plan[k]
+        base_seed = config.seed if condition.seed is None else condition.seed
+        seed = base_seed + i
+        label = f'{condition.name}  {k + 1}/{n}  seed {seed}'
+        r = run_round(
+            env, device, condition, seed, config, label, get_events, clock, hooks,
+        )
+        results.append(r)
+        if r.outcome == 'quit':
+            return results
+        if r.outcome != 'retry':
+            k += 1
+        if r.pause_after and k < len(plan):
+            nxt, j = plan[k]
+            nseed = (config.seed if nxt.seed is None else nxt.seed) + j
+            if not wait_between_rounds(env, f'{nxt.name} seed {nseed}', get_events, clock, config.fps):
                 return results
-            if r.outcome != 'retry':
-                i += 1
-                k += 1
     return results
 
 
@@ -203,7 +303,7 @@ def summarize(results) -> str:
     return '\n'.join(lines)
 
 
-def main(argv=None):
+def run(argv=None):
     parser = argparse.ArgumentParser(description='Play PushT under configured variations.')
     parser.add_argument('-c', '--config', help='sandbox YAML (default: plain PushT, 5 rounds)')
     args = parser.parse_args(argv)
@@ -213,11 +313,22 @@ def main(argv=None):
     try:
         device = InputDevice(**config.device)
         print(f'input: {device.kind} ({device.name})')
+        if device.kind == 'gamepad':
+            if device.precision_index is None:
+                print(f'precision: off (no button {device.precision_button!r} on this pad; '
+                      'see `uv run pts-buttons`)')
+            else:
+                print(f'precision: hold {device.precision_button!r} (button {device.precision_index})')
         results = run_session(config, device=device)
     finally:
         pygame.quit()
     print(summarize(results))
     return results
+
+
+def main(argv=None):
+    """Console entry point (returns None so the exit status is 0)."""
+    run(argv)
 
 
 if __name__ == '__main__':

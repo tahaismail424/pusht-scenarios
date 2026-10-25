@@ -90,9 +90,10 @@ def test_unknown_key_rejected(tmp_path):
         sandbox.load_config(path)
 
 
-def test_example_conditions_reset(env):
-    # every example condition must produce valid reset options for the env
-    for condition in sandbox.load_config(EXAMPLE).conditions:
+@pytest.mark.parametrize('path', sorted(EXAMPLE.parent.glob('*.yaml')), ids=lambda p: p.name)
+def test_all_configs_load_and_reset(env, path):
+    # every condition in every shipped config must produce valid reset options
+    for condition in sandbox.load_config(path).conditions:
         env.reset(seed=0, options=sandbox.reset_options(env, condition))
 
 
@@ -229,6 +230,103 @@ def test_main_runs_headless(tmp_path, capsys):
         'conditions:\n  - name: default\n  - name: square\n'
         '    variation_values: {block.shape: 4}\n'
     )
-    results = sandbox.main(['-c', str(path)])
+    results = sandbox.run(['-c', str(path)])
     assert [r.outcome for r in results] == ['timeout', 'timeout']
     assert 'input: mouse' in capsys.readouterr().out
+
+
+class CountingHooks(sandbox.RoundHooks):
+    def __init__(self):
+        self.calls = []
+
+    def on_round_start(self, env, condition, seed):
+        self.calls.append(('start', seed))
+
+    def on_step(self, env, raw_action, info, on_goal, t_wall):
+        self.calls.append(('step', bool(on_goal), 'applied_action' in info))
+
+    def on_round_end(self, env, result, started):
+        self.calls.append(('end', result.outcome, started))
+
+    def on_event(self, env, event):
+        self.calls.append(('event', event.key))
+
+
+def test_hooks_contract(env):
+    # recorder relies on: start before steps, one on_step per env.step with the
+    # applied action in info, end on every exit, unhandled keys forwarded
+    from pusht_scenarios.env.bounds import KeepAgentOnBoard
+
+    wrapped = KeepAgentOnBoard(env)
+    hooks = CountingHooks()
+    r = sandbox.run_round(wrapped, zero_device(), ON_GOAL, 3, fast(hold_steps=2),
+                          get_events=scripted([key(pygame.K_u)]), hooks=hooks)
+    assert r.outcome == 'success'
+    assert hooks.calls == [
+        ('start', 3),
+        ('event', pygame.K_u),
+        ('step', True, True),
+        ('step', True, True),
+        ('end', 'success', True),
+    ]
+
+
+def test_hooks_not_started_when_never_engaged(env):
+    hooks = CountingHooks()
+    config = SandboxConfig(fps=0, wait_for_input=True)
+    sandbox.run_round(env, zero_device(), Condition(), 0, config,
+                      get_events=scripted([], [key(pygame.K_q)]), hooks=hooks)
+    assert hooks.calls == [('end', 'quit', False)]
+
+
+# queued pause between rounds (P)
+
+
+def p_key():
+    return key(pygame.K_p)
+
+
+def test_p_queues_and_unqueues_a_pause(env, monkeypatch):
+    shown = []
+    monkeypatch.setattr(sandbox, 'draw_hud', lambda env, text: shown.append(text))
+    r = sandbox.run_round(env, zero_device(), ON_GOAL, 0, fast(), get_events=scripted([p_key()]))
+    assert r.outcome == 'success' and r.pause_after
+    assert any('PAUSE QUEUED' in t for t in shown)
+    r = sandbox.run_round(env, zero_device(), ON_GOAL, 0, fast(),
+                          get_events=scripted([p_key()], [p_key()]))
+    assert not r.pause_after
+
+
+def test_session_pauses_before_next_round_until_p(env, monkeypatch):
+    waits = []
+    real = sandbox.wait_between_rounds
+
+    def spy(*a, **k):
+        waits.append(a[1])
+        return real(*a, **k)
+
+    monkeypatch.setattr(sandbox, 'wait_between_rounds', spy)
+    # round 1: P queued on frame 0, success after 5 steps (frames 0-4);
+    # paused: frames 5-7 idle, frame 8 P continues; round 2 runs
+    frames = [[p_key()], [], [], [], [], [], [], [], [p_key()]]
+    events = scripted(*frames)
+    config = fast(conditions=[ON_GOAL, Condition('b', variation=[], variation_values=ON_GOAL.variation_values)],
+                  rounds_per_condition=1)
+    results = sandbox.run_session(config, env=env, device=zero_device(), get_events=events)
+    assert [r.outcome for r in results] == ['success', 'success']
+    assert waits == ['b seed 0'] and events() == []
+
+
+def test_quit_while_paused_ends_session(env):
+    config = fast(conditions=[ON_GOAL, Condition('b', variation=[], variation_values=ON_GOAL.variation_values)],
+                  rounds_per_condition=1)
+    frames = [[p_key()], [], [], [], [], [key(pygame.K_q)]]
+    results = sandbox.run_session(config, env=env, device=zero_device(), get_events=scripted(*frames))
+    assert [r.outcome for r in results] == ['success']
+
+
+def test_no_pause_after_the_last_round(env, monkeypatch):
+    monkeypatch.setattr(sandbox, 'wait_between_rounds', lambda *a, **k: pytest.fail('paused'))
+    config = fast(conditions=[ON_GOAL], rounds_per_condition=1)
+    results = sandbox.run_session(config, env=env, device=zero_device(), get_events=scripted([p_key()]))
+    assert results[0].pause_after

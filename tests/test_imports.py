@@ -10,6 +10,10 @@ def test_modules_import():
     import pusht_scenarios.env  # noqa: F401
     from pusht_scenarios.env import env, spaces, utils  # noqa: F401
     from pusht_scenarios.env.env import PushT  # noqa: F401
+    # recording/data boilerplate must at least import
+    from pusht_scenarios.gen import augment, replay  # noqa: F401
+    from pusht_scenarios.io import cli, collection, demo, session  # noqa: F401
+    from pusht_scenarios.teleop import record  # noqa: F401
 
 
 def test_gym_id_registered():

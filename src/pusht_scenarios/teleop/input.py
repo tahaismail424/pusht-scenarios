@@ -15,7 +15,7 @@ class InputDevice:
         stick_thresh=0.1,
         gain=0.6,
         precision_gain=0.1,
-        precision_button=None,
+        precision_button='rightshoulder',
         joystick=None,
         mouse_pos=None,
         use_hid=True,
@@ -25,7 +25,10 @@ class InputDevice:
             stick_thresh: radial dead zone on the stick, in [0, 1).
             gain: action at full stick deflection (1.0 = 100 px target offset).
             precision_gain: gain while precision_button is held.
-            precision_button: joystick button index for precision mode, or None.
+            precision_button: button held for precision mode: an SDL
+                GameController name ('rightshoulder', 'a', ...), a raw button
+                index, or None to disable. Names are resolved per device; if
+                unresolvable, precision mode is disabled (see precision_index).
             joystick: object with get_axis/get_button; defaults to the first
                 pygame joystick if one is connected, else (use_hid) the first
                 HID gamepad read via hidapi. Injectable for tests.
@@ -50,6 +53,24 @@ class InputDevice:
                 joystick = open_first_gamepad()
         # None -> fall back to mouse
         self.device = joystick
+        self.precision_index = self._resolve_button(precision_button)
+
+    def button_names(self) -> dict[str, int]:
+        """Button name -> raw index for the current device ({} if unknown)."""
+        if self.device is None:
+            return {}
+        if hasattr(self.device, 'button_names'):
+            return self.device.button_names()
+        if isinstance(self.device, pygame.joystick.JoystickType):
+            return sdl_button_names(self.device)
+        return {}
+
+    def _resolve_button(self, button):
+        if button is None or self.device is None:
+            return None
+        if isinstance(button, int):
+            return button
+        return self.button_names().get(button)
 
     @property
     def kind(self) -> str:
@@ -91,8 +112,8 @@ class InputDevice:
         direction = stick / mag
 
         precise = (
-            self.precision_button is not None
-            and self.device.get_button(self.precision_button)
+            self.precision_index is not None
+            and self.device.get_button(self.precision_index)
         )
         gain = self.precision_gain if precise else self.gain
         return (direction * scaled * gain).astype(np.float32)
@@ -105,3 +126,23 @@ class InputDevice:
         agent = np.array(base.agent.position, dtype=np.float64)
         action = (mouse - agent) / base.action_scale
         return np.clip(action, -1, 1).astype(np.float32)
+
+
+def sdl_button_names(joystick) -> dict[str, int]:
+    """Standard button names -> raw indices from SDL's controller database
+    ({} if SDL has no mapping for this joystick). Only plain buttons ('bN')."""
+    try:
+        from pygame._sdl2 import controller
+    except ImportError:
+        return {}
+    controller.init()
+    index = joystick.get_id()
+    if not controller.is_controller(index):
+        return {}
+    pad = controller.Controller(index)
+    mapping = pad.get_mapping()
+    return {
+        name: int(src[1:])
+        for name, src in mapping.items()
+        if src.startswith('b') and src[1:].isdigit()
+    }

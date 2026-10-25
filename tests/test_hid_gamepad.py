@@ -90,3 +90,15 @@ def test_drives_input_device():
     action = device.read(env)
     assert action[0] > 0.25 and 0 < action[1] < 0.15
     env.close()
+
+
+def test_rightshoulder_precision_via_hid():
+    env = gym.make('pts/PushT-v0')
+    env.reset(seed=0)
+    g = pad(report(x=255, buttons=1 << 7))
+    assert g.button_names()['rightshoulder'] == 7
+    device = InputDevice(joystick=g, gain=0.6, precision_gain=0.1)  # default: rightshoulder
+    assert device.precision_index == 7
+    # y rests at 127/255, a hair below center
+    np.testing.assert_allclose(device.read(env), [0.1, 0.0], atol=1e-3)
+    env.close()

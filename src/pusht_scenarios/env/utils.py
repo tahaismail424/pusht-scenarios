@@ -12,7 +12,7 @@ positive_y_is_up: bool = False
 
 
 class DrawOptions(pymunk.SpaceDebugDrawOptions):
-    def __init__(self, surface: pygame.Surface) -> None:
+    def __init__(self, surface: pygame.Surface, draw_contacts: bool = False) -> None:
         """Draw a pymunk.Space on a pygame.Surface object.
 
         Typical usage::
@@ -60,6 +60,14 @@ class DrawOptions(pymunk.SpaceDebugDrawOptions):
         """
         self.surface = surface
         super().__init__()
+        # pusht-scenarios: draw shapes only. Constraints (our knobs' joints:
+        # agent strength, floor friction) and contact points would otherwise be
+        # drawn as dots, putting hidden factors and contact state into the
+        # pixels. swm draws contact points; draw_contacts=True restores that for
+        # pixel parity checks (tests/test_parity.py). swm has no joints.
+        self.flags = pymunk.SpaceDebugDrawOptions.DRAW_SHAPES
+        if draw_contacts:
+            self.flags |= pymunk.SpaceDebugDrawOptions.DRAW_COLLISION_POINTS
 
     def draw_circle(
         self,

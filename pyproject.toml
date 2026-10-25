@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "gymnasium>=1.4.0",
+    "h5py>=3.16.0",
+    "hdf5plugin>=7.1.0",
     "hidapi>=0.15.0",
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0.93",
@@ -17,6 +19,13 @@ dependencies = [
 [project.scripts]
 pusht-scenarios = "pusht_scenarios:main"
 pts-sandbox = "pusht_scenarios.teleop.sandbox:main"
+pts-buttons = "pusht_scenarios.teleop.buttons:main"
+pts-record = "pusht_scenarios.teleop.record:main"
+pts-data = "pusht_scenarios.io.cli:main"
+pts-replay = "pusht_scenarios.teleop.viewer:main"
+pts-augment = "pusht_scenarios.gen.recipe:main"
+pts-suite = "pusht_scenarios.suite:main"
+pts-export = "pusht_scenarios.export.hdf5:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

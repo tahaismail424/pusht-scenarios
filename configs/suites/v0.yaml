@@ -1,0 +1,76 @@
+# v0 suite: 4 factors x 3 levels, one level per factor held out.
+#
+#   uv run pts-suite show  configs/suites/v0.yaml
+#   uv run pts-suite build configs/suites/v0.yaml --out configs/generated/v0
+#   uv run pts-sandbox -c configs/generated/v0/record.yaml   # test-play
+#   uv run pts-record  -c configs/generated/v0/record.yaml   # record
+#
+# Train: full factorial of the 2 train levels per factor (2^4 = 16 envs).
+# Test: single-factor shifts, one factor at its held-out level and the others
+# at their reference level (4 envs). The held-out choice is the knob:
+#   --holdout mass=high        (extrapolation instead of interpolation)
+#   --holdout high             (suite-wide policy for every ordered factor)
+#   --test-context all         (test each held-out level in every train context)
+#
+# Hidden factors (mass, friction) look identical on screen; visible factors
+# (color, shape) test the encoder. Shape also changes the dynamics.
+
+name: v0
+
+# Shared by every env. Mass only matters when the agent's strength is finite
+# (CLAUDE.md, knob #6), so all v0 envs use the same finite strength.
+base:
+  sim.agent_max_force: 10000.0
+
+holdout_policy: middle      # ordered factors: low | middle | high (list order = low -> high)
+test_context: reference
+include_all_heldout: false
+
+factors:
+  mass:                     # block mass (hidden)
+    ordered: true
+    levels:
+      light:  {sim.block_mass: 0.5}
+      normal: {sim.block_mass: 1.0}
+      heavy:  {sim.block_mass: 3.0}
+    # holdout: middle -> normal (interpolation)
+    reference: light
+
+  friction:                 # floor (hidden). Ordered by how quickly a pushed block stops.
+    ordered: true
+    levels:
+      low:  {sim.damping: 1.0, sim.floor_friction: 0.4}   # slides ~50 px after a push
+      high: {sim.damping: 1.0, sim.floor_friction: 2.0}   # slides a little, barely turns
+      stop: {}                                            # swm: stops dead (damping 0)
+    # holdout: middle -> high
+    reference: stop
+
+  color:                    # whole palette (visible)
+    ordered: false
+    levels:
+      default: {}
+      warm:  {block.color: [205, 70, 70], agent.color: [60, 170, 100],
+              goal.color: [245, 205, 90], background.color: [250, 245, 235]}
+      night: {block.color: [190, 190, 210], agent.color: [255, 210, 60],
+              goal.color: [70, 130, 90], background.color: [25, 25, 35]}
+    holdout: night
+    reference: default
+
+  shape:                    # block shape (visible + dynamics). swm ids: 2=T 5=I 7=+
+    ordered: false
+    levels:
+      T:    {block.shape: 2}
+      I:    {block.shape: 5}
+      plus: {block.shape: 7}
+    holdout: plus
+    reference: T
+
+record:                     # session settings for the generated record.yaml
+  rounds: {train: 10, test: 12}   # demos per env (T2-z: ~10 episodes per env)
+  seed: {train: 0, test: 1000}    # test envs get their own start layouts
+  max_steps: 400
+  fps: 10
+  hold_steps: 5
+  shuffle_conditions: true
+  device: {gain: 0.6, precision_button: rightshoulder}
+  output: {root: data/raw, save_failures: true, operator: taha}

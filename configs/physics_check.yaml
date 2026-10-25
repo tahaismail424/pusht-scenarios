@@ -1,0 +1,65 @@
+# Physics sanity check: uv run pts-sandbox -c configs/physics_check.yaml
+#
+# Same start layouts in every condition (seeds 0, 1), default T. The condition
+# name is shown top-left. What you should notice, compared with `default`:
+#
+#   default        swm physics: block stops dead the moment you stop pushing
+#   ice            no damping: block slides and spins after a push, for a long time
+#   carpet         momentum, but strong floor friction: slides a little, stops fast
+#   no_spin        floor + extra angular friction: hard to rotate, pushes mostly translate
+#   grippy         agent-block friction: block drags/turns with the agent on glancing pushes
+#   cog_left/right center of mass shifted along the bar: same push turns the T
+#                  opposite ways in the two conditions (the CoG itself is invisible)
+#   light/heavy    same finite agent strength, 10x block mass: heavy pushes far slower
+#                  (the agent bunches up against it) while free movement feels the same
+#   weak_agent     normal block, weak agent: everything you push feels sluggish
+#   immovable      floor friction * mass exceeds the agent's strength: the block won't budge
+#
+# With any agent_max_force > 0 the agent is a physical body: it also stops at
+# walls (swm's default agent passes straight through them and off the board).
+#
+# Note: floor/angular friction only show up with damping > 0; under swm's
+# damping 0 the block has no momentum to brake.
+
+rounds_per_condition: 2
+seed: 0
+max_steps: 300
+fps: 10
+
+device:
+  gain: 0.6
+  precision_button: rightshoulder
+
+conditions:
+  - name: default
+
+  - name: ice
+    variation_values: {sim.damping: 1.0}
+
+  - name: carpet
+    variation_values: {sim.damping: 1.0, sim.floor_friction: 2.0}
+
+  - name: no_spin
+    variation_values: {sim.damping: 1.0, sim.floor_friction: 0.5, sim.angular_friction: 2.0}
+
+  - name: grippy
+    variation_values: {sim.contact_friction: 2.0}
+
+  - name: cog_left
+    variation_values: {sim.block_cog_offset: [-25.0, 0.0]}
+
+  - name: cog_right
+    variation_values: {sim.block_cog_offset: [25.0, 0.0]}
+
+  - name: light
+    variation_values: {sim.agent_max_force: 10000.0, sim.block_mass: 1.0}
+
+  - name: heavy
+    variation_values: {sim.agent_max_force: 10000.0, sim.block_mass: 10.0}
+
+  - name: weak_agent
+    variation_values: {sim.agent_max_force: 3000.0}
+
+  - name: immovable
+    variation_values: {sim.agent_max_force: 5000.0, sim.block_mass: 10.0,
+                       sim.damping: 1.0, sim.floor_friction: 1.0}

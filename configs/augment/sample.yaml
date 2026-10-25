@@ -1,0 +1,30 @@
+# Small augmentation sample to eyeball every augmenter.
+#   uv run pts-augment -c configs/augment/sample.yaml
+#   uv run pts-replay data/aug/sample
+#
+# 1 parent per condition (15) x 7 bases x 3 noise levels ~= 300 demos (~15 s).
+# Viewer labels show the base (original / rot180 / se2_0 / mirror90 /
+# original+teal ...) and the noise level.
+
+name: sample
+sources: [data/raw]
+output_root: data/aug
+seed: 0
+parents_per_condition: 1
+
+bases:
+  original: true
+  rotations_deg: [180]
+  se2: {count: 1, rotation_deg: [-180, 180], shift_px: [-60, 60]}
+  mirror_axes_deg: [90]       # left-right flip (skipped for shapes without a mirror axis)
+
+palettes:
+  apply_to: original
+  palettes:
+    teal:  {block.color: [40, 150, 150], agent.color: [230, 120, 40], goal.color: [170, 230, 170], background.color: [250, 245, 235]}
+    night: {block.color: [190, 190, 210], agent.color: [255, 210, 60], goal.color: [70, 130, 90], background.color: [25, 25, 35]}
+
+noise:                        # [sigma, copies]; DINO-WM levels in augment/full.yaml
+  - [0.0, 1]
+  - [0.01, 1]
+  - [0.07, 1]

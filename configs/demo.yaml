@@ -1,0 +1,98 @@
+# Varied Push-T demo suite: hidden physics, visible appearance, geometry, goals.
+#
+#   uv run pts-sandbox -c configs/demo.yaml    # play it (nothing saved)
+#   uv run pts-record  -c configs/demo.yaml    # record it to data/raw/<session>/
+#   uv run pts-replay  data/raw/<session>      # watch the recordings
+#
+# One file drives both: the sandbox ignores the `output:` block.
+# Round i of every condition uses seed (seed + i), so every condition starts
+# from the same agent/block placements (unless it moves the goal). Each
+# condition changes ONE factor from `default`, so effects stay separable;
+# `combo` is the exception, kept as a harder mixed case.
+#
+# Measured on a fixed scripted push (block moved px / turned deg / slid after
+# release px), vs default 142 / 48 / 2:
+#   heavy 31/12/2   slippery 137/61/57   sticky_floor 124/17/12
+#   no_spin 159/7/29   grippy 146/58/2   cog_* turn differently per side
+#
+# Hidden vs visible (for adaptation experiments): physics conditions look
+# identical to default on screen; colors/shape/goal conditions are visible.
+
+rounds_per_condition: 5
+seed: 0
+max_steps: 400            # 40 s; heavy/sticky rounds take longer
+fps: 10
+hold_steps: 5
+pos_tol: 20.0
+angle_tol_deg: 20.0
+shuffle_conditions: true  # random block order per session (recorded in session.yaml)
+
+device:
+  gain: 0.6
+  stick_thresh: 0.1
+  precision_gain: 0.1
+  precision_button: rightshoulder
+
+output:                   # used by pts-record only
+  root: data/raw
+  session_name: demo
+  save_failures: true     # timeouts kept too, flagged outcome=timeout
+  operator: taha
+
+conditions:
+  # --- reference -----------------------------------------------------------
+  - name: default         # swm physics: block stops dead when not pushed
+
+  # --- hidden physics (look identical to default) --------------------------
+  - name: heavy           # weak agent vs 3x mass: pushes ~4-5x slower
+    variation_values: {sim.agent_max_force: 10000.0, sim.block_mass: 3.0}
+
+  - name: slippery        # low floor friction (not full ice): slides ~50 px after a push
+    variation_values: {sim.damping: 1.0, sim.floor_friction: 0.4}
+
+  - name: sticky_floor    # high floor friction vs agent strength: grinds, barely turns
+    variation_values: {sim.damping: 1.0, sim.floor_friction: 2.0,
+                       sim.block_mass: 2.0, sim.agent_max_force: 5000.0}
+
+  - name: no_spin         # extra rotational friction: hard to rotate, pushes mostly translate
+    variation_values: {sim.damping: 1.0, sim.floor_friction: 0.5, sim.angular_friction: 2.0}
+
+  - name: grippy          # agent-block friction: block drags/turns with glancing pushes
+    variation_values: {sim.contact_friction: 1.5}
+
+  - name: cog_right       # center of mass shifted along the bar: same push turns it the other way
+    variation_values: {sim.block_cog_offset: [20.0, 0.0]}
+
+  - name: cog_stem        # center of mass shifted down the stem
+    variation_values: {sim.block_cog_offset: [0.0, 25.0]}
+
+  # --- visible appearance --------------------------------------------------
+  - name: colors          # same task and physics, recolored scene
+    variation_values:
+      block.color: [205, 70, 70]
+      agent.color: [60, 170, 100]
+      goal.color: [245, 205, 90]
+      background.color: [35, 35, 50]
+
+  # --- geometry ------------------------------------------------------------
+  - name: shape_L
+    variation_values: {block.shape: 1}
+
+  - name: shape_plus      # 90-degree symmetric: any quarter turn counts
+    variation_values: {block.shape: 7}
+
+  # --- goals (start placements still vary by seed) -------------------------
+  - name: goal_left
+    variation_values: {goal.position: [170.0, 330.0], goal.angle: 1.2}
+
+  - name: goal_right
+    variation_values: {goal.position: [340.0, 180.0], goal.angle: -0.8}
+
+  - name: random_goal     # goal pose also drawn from the seed (may land near walls)
+    variation: [agent.start_position, block.start_position, block.angle,
+                goal.position, goal.angle]
+
+  # --- mixed ---------------------------------------------------------------
+  - name: combo           # L block, off-center mass, slippery floor
+    variation_values: {block.shape: 1, sim.block_cog_offset: [15.0, 10.0],
+                       sim.damping: 1.0, sim.floor_friction: 0.5}

@@ -19,7 +19,7 @@ device:
   gain: 0.6           # action at full stick tilt (1.0 = 100 px per step)
   stick_thresh: 0.1   # radial dead zone
   precision_gain: 0.1
-  precision_button: null   # set once we know your controller's button index
+  precision_button: rightshoulder   # SDL name (a, b, x, y, leftshoulder, ...) or raw index; null = off
 
 conditions:
   - name: default
