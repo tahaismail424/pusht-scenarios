@@ -1,0 +1,6 @@
+AGENTS.md
+CLAUDE.md
+.venv/
+**/__pycache__/
+uv.lock
+.pytest_cache/

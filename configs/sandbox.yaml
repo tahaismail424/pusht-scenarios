@@ -1,0 +1,35 @@
+# Sandbox session: uv run pts-sandbox -c configs/sandbox.yaml
+#
+# Round i of every condition uses seed (seed + i), so all conditions start
+# from the same agent/block placements unless a condition overrides them.
+# Variation keys are dotted paths into the env's variation space, e.g.
+# block.shape, block.color, goal.position, goal.angle, sim.contact_friction.
+# Block shapes: 1=L 2=T 3=Z 4=square 5=I 6=small_tee 7=+
+# (sim.* physics knobs are declared but not yet wired into the physics.)
+
+rounds_per_condition: 3
+seed: 0
+max_steps: 300        # 30 s per round at 10 Hz
+fps: 10               # display rate; raise to play faster (data unchanged)
+hold_steps: 5         # block must stay on the goal this many steps
+pos_tol: 20.0         # px
+angle_tol_deg: 20.0
+
+device:
+  gain: 0.6           # action at full stick tilt (1.0 = 100 px per step)
+  stick_thresh: 0.1   # radial dead zone
+  precision_gain: 0.1
+  precision_button: null   # set once we know your controller's button index
+
+conditions:
+  - name: default
+
+  - name: red_L
+    variation_values:
+      block.shape: 1
+      block.color: [220, 60, 60]
+
+  - name: random_goal
+    # resample the goal too, on top of the default start-pose variations
+    variation: [agent.start_position, block.start_position, block.angle,
+                goal.position, goal.angle]
