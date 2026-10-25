@@ -229,3 +229,9 @@ def test_session_end_logged_on_error(env, tmp_path):
             raise KeyError('crash')
     last = read_events(s.path)[-1]
     assert last['event'] == 'session_end' and 'crash' in last['error']
+
+
+def test_sessions_started_in_the_same_second_get_distinct_dirs(tmp_path):
+    out = OutputConfig(root=str(tmp_path), session_name='x')
+    with SessionWriter(out, {}) as a, SessionWriter(out, {}) as b:
+        assert a.path != b.path and a.path.exists() and b.path.exists()

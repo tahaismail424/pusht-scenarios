@@ -66,6 +66,9 @@ class Recipe:
     seed: int = 0
     conditions: list | None = None  # condition names to include (None = all)
     suite_splits: list | None = None  # e.g. [train]: only demos of these suite splits
+    # built suite.yaml: only its envs are augmented, and suite_splits follow it
+    # (instead of the split recorded in each demo)
+    suite: str | None = None
     parents_per_condition: int | None = None  # cap, for quick samples
     include_rejected: bool = False  # parents undone during recording
     include_failures: bool = True  # parents with outcome != success
@@ -111,6 +114,11 @@ def load_recipe(path) -> Recipe:
 
 
 def select_parents(recipe: Recipe) -> list[Path]:
+    suite_split = None
+    if recipe.suite:
+        from pusht_scenarios.suite import load_suite
+
+        suite_split = {e.name: e.split for e in load_suite(recipe.suite).envs}
     rejected = {}
     by_condition = defaultdict(list)
     for path in find_demos(*recipe.sources):
@@ -120,8 +128,12 @@ def select_parents(recipe: Recipe) -> list[Path]:
             continue
         if recipe.conditions is not None and m.condition not in recipe.conditions:
             continue
-        if recipe.suite_splits is not None and m.condition_info.get('split') not in recipe.suite_splits:
-            continue
+        if suite_split is not None and m.condition not in suite_split:
+            continue  # not one of the suite's envs (e.g. another session's conditions)
+        if recipe.suite_splits is not None:
+            split = suite_split.get(m.condition) if suite_split else m.condition_info.get('split')
+            if split not in recipe.suite_splits:
+                continue
         if not recipe.include_failures and m.outcome != 'success':
             continue
         session = session_dir_of(path)

@@ -252,9 +252,10 @@ def wait_between_rounds(env, next_label, get_events=pygame.event.get, clock=None
 
 
 def run_session(
-    config, env=None, device=None, get_events=pygame.event.get, hooks=None
+    config, env=None, device=None, get_events=pygame.event.get, hooks=None, skip=None
 ):
-    """Play every round of every condition. Retry replays the same seed."""
+    """Play every round of every condition. Retry replays the same seed.
+    skip: {(condition name, seed)} rounds to leave out (e.g. already recorded)."""
     env = env or KeepAgentOnBoard(gym.make('pts/PushT-v0', render_mode='human'))
     device = device or InputDevice(**config.device)
     results = []
@@ -263,10 +264,13 @@ def run_session(
     def rounds(c):
         return config.rounds_per_condition if c.rounds is None else c.rounds
 
-    n = sum(rounds(c) for c in config.conditions)
+    skip = skip or set()
     plan = []  # (condition, round index) in play order
     for condition in condition_order(config):
-        plan.extend((condition, i) for i in range(rounds(condition)))
+        base = config.seed if condition.seed is None else condition.seed
+        plan.extend((condition, i) for i in range(rounds(condition))
+                    if (condition.name, base + i) not in skip)
+    n = len(plan)
 
     k = 0
     while k < len(plan):

@@ -263,3 +263,121 @@ def test_inexact_replay_is_refused(mini, tmp_path):
     spec = X.spec_from_dict({'name': 'bad', 'sources': [str(src.parent)], 'output_root': str(tmp_path / 'out')})
     with pytest.raises(RuntimeError, match='not exact'):
         X.run_export(spec, verbose=False)
+
+
+# --- full-factorial recordings, re-split at export ---------------------------
+
+
+@pytest.fixture(scope='module')
+def factorial(tmp_path_factory):
+    """Mini suite with record_all: all 3x3 combinations recorded (2 successes each)."""
+    import pygame
+
+    from pusht_scenarios import suite as S
+    from pusht_scenarios.env.bounds import KeepAgentOnBoard
+    from pusht_scenarios.teleop import record
+    from pusht_scenarios.teleop.input import InputDevice
+
+    from conftest import MINI_SUITE, ON_GOAL, IdleStick
+
+    root = tmp_path_factory.mktemp('factorial')
+    raw = {**MINI_SUITE, 'record_all': True,
+           'record': {**MINI_SUITE['record'], 'rounds': {'all': 2}}}
+    built = S.build(S.spec_from_dict(raw))
+    cfg = record.record_config_from_dict(S.record_config(built))
+    cfg.output.root = str(root / 'raw')
+    for c in cfg.sandbox.conditions:
+        c.variation, c.variation_values = [], {**c.variation_values, **ON_GOAL}
+    pygame.init()
+    env = KeepAgentOnBoard(gym.make('pts/PushT-v0', render_mode='human'))
+    record.record(cfg, env=env, device=InputDevice(joystick=IdleStick()), get_events=lambda: [], verbose=False)
+    env.close()
+    pygame.quit()
+    suites = {}
+    for name, overrides in (('middle', []), ('high', ['mass=heavy'])):
+        out = root / name
+        S.write(S.build(S.apply_overrides(S.spec_from_dict(raw), overrides)), out)
+        suites[name] = out / 'suite.yaml'
+    return {'raw': root / 'raw', 'suites': suites, 'root': root}
+
+
+def _split_names(spec):
+    index = DemoIndex.scan(*spec.sources)
+    s = X.assign_splits(spec, index, X.resolve_envs(spec, index))
+    return {k: {r.meta.condition for r in v} for k, v in s.items()}
+
+
+def test_same_recordings_resplit_by_holdout(factorial):
+    base = {'name': 'f', 'sources': [str(factorial['raw'])], 'output_root': '.',
+            'splits': {'val_fraction': 0.0, 'adapt_per_env': 1}}
+    mid = _split_names(X.spec_from_dict({**base, 'suite': str(factorial['suites']['middle'])}))
+    high = _split_names(X.spec_from_dict({**base, 'suite': str(factorial['suites']['high'])}))
+    assert all('mass-normal' not in n for n in mid['train'])
+    assert all('mass-heavy' not in n for n in high['train'])
+    assert any('mass-normal' in n for n in high['train'])
+    # 9 recorded combos: 4 train + 2 test used, 3 unused (not exported)
+    assert len(mid['train']) == 4 and len(mid['test_adapt']) == 2
+    used = mid['train'] | mid['test_adapt'] | mid['test_eval']
+    assert len(used) == 6
+
+
+def test_resplit_export_via_cli_suite_override(factorial, tmp_path):
+    spec_path = tmp_path / 'spec.yaml'
+    spec_path.write_text(yaml.safe_dump({'name': 'f', 'sources': [str(factorial['raw'])],
+                                         'suite': str(factorial['suites']['middle']),
+                                         'output_root': str(tmp_path / 'out'),
+                                         'splits': {'val_fraction': 0.0, 'adapt_per_env': 1}}))
+    X.run(['-c', str(spec_path), '--suite', str(factorial['suites']['high'])])
+    m = yaml.safe_load((tmp_path / 'out' / 'f.manifest.yaml').read_text())
+    assert m['spec']['suite'] == str(factorial['suites']['high'])
+    lines = [json.loads(l) for l in (tmp_path / 'out' / 'f_train.episodes.jsonl').read_text().splitlines()]
+    assert lines and all('mass-heavy' not in l['condition'] for l in lines)
+
+
+def test_changed_level_values_are_refused(factorial, tmp_path):
+    from pusht_scenarios import suite as S
+
+    from conftest import MINI_SUITE
+
+    raw = {**MINI_SUITE, 'record_all': True}
+    raw['factors'] = {**MINI_SUITE['factors'],
+                      'mass': {**MINI_SUITE['factors']['mass'],
+                               'levels': {**MINI_SUITE['factors']['mass']['levels'],
+                                          'heavy': {'sim.block_mass': 4.0}}}}
+    S.write(S.build(S.spec_from_dict(raw)), tmp_path)
+    spec = X.spec_from_dict({'name': 'f', 'sources': [str(factorial['raw'])],
+                             'suite': str(tmp_path / 'suite.yaml'), 'output_root': '.'})
+    index = DemoIndex.scan(*spec.sources)
+    with pytest.raises(ValueError, match='env_hash mismatch'):
+        X.assign_splits(spec, index, X.resolve_envs(spec, index))
+
+
+def test_conditions_outside_the_suite_are_skipped(mini, tmp_path):
+    # e.g. a demo.yaml session living in the same data/raw
+    import shutil
+
+    src = tmp_path / 'raw'
+    shutil.copytree(mini['raw'], src)
+    other = load_demo(next(iter(sorted(src.rglob('*.npz')))))
+    other.meta.condition, other.meta.demo_id, other.meta.condition_info = 'not_in_suite', 'f' * 32, {}
+    save_demo(other, src / 'extra' / 'demos' / 'x.npz')
+    spec = mini_spec(mini, '.', sources=[str(src)])
+    index = DemoIndex.scan(*spec.sources)
+    s = X.assign_splits(spec, index, X.resolve_envs(spec, index))
+    assert all(r.meta.condition != 'not_in_suite' for rs in s.values() for r in rs)
+
+
+def test_export_with_a_joint_holdout(factorial, tmp_path):
+    from pusht_scenarios import suite as S
+
+    from conftest import MINI_SUITE
+
+    raw = {**MINI_SUITE, 'record_all': True}
+    built = S.build(S.apply_overrides(S.spec_from_dict(raw), [], 'all', combos=['mass=heavy,color=warm']))
+    S.write(built, tmp_path)
+    names = _split_names(X.spec_from_dict({
+        'name': 'j', 'sources': [str(factorial['raw'])], 'suite': str(tmp_path / 'suite.yaml'),
+        'output_root': '.', 'splits': {'val_fraction': 0.0, 'adapt_per_env': 1}}))
+    assert names['test_adapt'] == names['test_eval'] == {'mass-heavy.color-warm'}
+    assert len(names['train']) == 8
+    assert 'mass-heavy.color-default' in names['train'] and 'mass-light.color-warm' in names['train']

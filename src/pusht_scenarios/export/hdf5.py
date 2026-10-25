@@ -12,6 +12,10 @@
 #   <name>_<split>.episodes.jsonl   one line per episode: demo ids, env, provenance
 #   <name>.manifest.yaml   spec, suite envs, counts, columns, versions
 #
+# The train/test split comes from the suite. With a record_all suite, export
+# the same recordings under another holdout by rebuilding the suite
+# (pts-suite build ... --holdout mass=high --out <dir>) and passing --suite.
+#
 # Layout (swm HDF5Dataset; same as LeWM's pusht_expert_train.h5): one dataset
 # per column with rows for every step of every episode, plus ep_len/ep_offset.
 # An episode with T actions has T+1 rows: row t = observation at t and the
@@ -105,7 +109,7 @@ def load_spec(path) -> ExportSpec:
 class EnvInfo:
     env_id: int
     name: str
-    split: str  # train | test
+    split: str  # train | test | unused (recorded under record_all, not exported)
     levels: dict = field(default_factory=dict)
     env_hash: str = ''
 
@@ -130,9 +134,17 @@ def assign_splits(spec: ExportSpec, index: DemoIndex, envs: dict) -> dict[str, l
     """Every kept record -> one split (or none), by parent demo, never by episode."""
     sel = spec.select
     records = index.select(include_rejected=sel.include_rejected, conditions=sel.conditions)
-    unknown = sorted({r.meta.condition for r in records} - set(envs))
-    if unknown:
-        raise ValueError(f'conditions not in the suite: {unknown}')
+    outside = sorted({r.meta.condition for r in records} - set(envs))
+    if outside:  # other sessions' conditions (e.g. a demo.yaml session in data/raw)
+        records = records.select(where=lambda r: r.meta.condition in envs)
+    stale = sorted({r.meta.condition for r in records
+                    if r.meta.condition_info.get('env_hash')
+                    and envs[r.meta.condition].env_hash
+                    and r.meta.condition_info['env_hash'] != envs[r.meta.condition].env_hash})
+    if stale:
+        raise ValueError(f'recorded with different level values than the suite now defines '
+                         f'(env_hash mismatch): {stale}')
+    records = records.select(where=lambda r: envs[r.meta.condition].split != 'unused')
 
     parent_split: dict[str, str] = {}
     originals = [r for r in records if not r.is_derived]
@@ -404,10 +416,13 @@ def run(argv=None):
     parser.add_argument('--workers', type=int, help='render processes (default: 1)')
     parser.add_argument('--limit', type=int, help='at most N episodes per split (smoke tests)')
     parser.add_argument('--name', help='override the dataset name')
+    parser.add_argument('--suite', help="override the spec's suite.yaml (e.g. another holdout build)")
     args = parser.parse_args(argv)
     spec = load_spec(args.config)
     if args.name:
         spec.name = args.name
+    if args.suite:
+        spec.suite = args.suite
     return run_export(spec, workers=args.workers, limit=args.limit)
 
 

@@ -115,7 +115,8 @@ def test_merge_copies_kept_and_is_idempotent(data, tmp_path):
 
 def test_end_trim_replays_exactly(data):
     raw, _ = data
-    rec = list(C.DemoIndex.scan(raw).select(derived=False))[0]
+    # a long (train-env, 25-step) recording, whatever the scan order
+    rec = next(r for r in C.DemoIndex.scan(raw).select(derived=False) if r.meta.steps > 10)
     demo = load_demo(rec.path)
     cut = C.trim(demo, end=len(demo) - 5)
     assert len(cut) == len(demo) - 5 and cut.meta.steps == len(cut)

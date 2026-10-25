@@ -5,12 +5,17 @@
 #   uv run pts-sandbox -c configs/generated/v0/record.yaml   # test-play
 #   uv run pts-record  -c configs/generated/v0/record.yaml   # record
 #
+# Recording: the FULL factorial, all 3^4 = 81 level combinations x 6 demos
+# (record_all), so the train/test split can be changed after recording.
 # Train: full factorial of the 2 train levels per factor (2^4 = 16 envs).
 # Test: single-factor shifts, one factor at its held-out level and the others
-# at their reference level (4 envs). The held-out choice is the knob:
+# at their reference level (4 envs). The other 61 combinations are recorded but
+# unused under this holdout. The held-out choice is the knob:
 #   --holdout mass=high        (extrapolation instead of interpolation)
 #   --holdout high             (suite-wide policy for every ordered factor)
 #   --test-context all         (test each held-out level in every train context)
+# To re-split after recording: build again with the new knob into another
+# directory and export with `pts-export -c configs/datasets/v0.yaml --suite <dir>/suite.yaml`.
 #
 # Hidden factors (mass, friction) look identical on screen; visible factors
 # (color, shape) test the encoder. Shape also changes the dynamics.
@@ -25,6 +30,7 @@ base:
 holdout_policy: middle      # ordered factors: low | middle | high (list order = low -> high)
 test_context: reference
 include_all_heldout: false
+record_all: true          # record all 81 combinations; splits chosen at export
 
 factors:
   mass:                     # block mass (hidden)
@@ -66,11 +72,14 @@ factors:
     reference: T
 
 record:                     # session settings for the generated record.yaml
-  rounds: {train: 10, test: 12}   # demos per env (T2-z: ~10 episodes per env)
-  seed: {train: 0, test: 1000}    # test envs get their own start layouts
+  rounds: {all: 6}          # demos per env with record_all (81 x 6 = 486)
+  layouts: per_env          # each env gets its own start layouts (seeds from its hash),
+                            # so whichever envs end up as test envs have unseen layouts
   max_steps: 400
   fps: 10
   hold_steps: 5
   shuffle_conditions: true
   device: {gain: 0.6, precision_button: rightshoulder}
-  output: {root: data/raw, save_failures: true, operator: taha}
+  # resume: a new session skips rounds already recorded under data/raw, so the
+  # 486 rounds can be played over several sittings (Q to stop any time)
+  output: {root: data/raw, save_failures: true, operator: taha, resume: true}

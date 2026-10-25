@@ -453,3 +453,30 @@ def test_suite_splits_filter(mini):
                                                   'suite_splits': ['train']}))
     assert len(picked) == 12
     assert {load_demo(p).meta.condition_info['split'] for p in picked} == {'train'}
+
+
+def test_suite_splits_from_a_built_suite(mini, tmp_path):
+    # the split comes from the suite file, not the one stored at recording time
+    from pusht_scenarios import suite as S
+    from conftest import MINI_SUITE
+
+    S.write(S.build(S.apply_overrides(S.spec_from_dict(MINI_SUITE), ['mass=heavy'])), tmp_path)
+    picked = R.select_parents(R.recipe_from_dict({'name': 'x', 'sources': [str(mini['raw'])],
+                                                  'suite_splits': ['train'],
+                                                  'suite': str(tmp_path / 'suite.yaml')}))
+    conds = {load_demo(p).meta.condition for p in picked}
+    assert conds and all('mass-heavy' not in c for c in conds)
+
+
+def test_recipe_suite_restricts_to_its_envs(mini, tmp_path):
+    import shutil
+
+    src = tmp_path / 'raw'
+    shutil.copytree(mini['raw'], src)
+    other = load_demo(next(iter(sorted(src.rglob('*.npz')))))
+    other.meta.condition, other.meta.demo_id = 'not_in_suite', 'e' * 32
+    save_demo(other, src / 'extra' / 'demos' / 'x.npz')
+    picked = R.select_parents(R.recipe_from_dict({'name': 'x', 'sources': [str(src)],
+                                                  'suite': str(mini['suite_path'])}))
+    assert len(picked) == 20
+    assert 'not_in_suite' not in {load_demo(p).meta.condition for p in picked}

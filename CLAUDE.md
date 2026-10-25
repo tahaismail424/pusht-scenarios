@@ -276,8 +276,28 @@ User decisions (2026-10-25):
   - friction {low = damping 1 + floor 0.4, high = damping 1 + floor 2, stop = swm} (holds out high);
   - color {default, warm, night} (holds out night);
   - shape {T, I, + (2, 5, 7)} (holds out +). "X" is just a rotated +, and swm's L isn't a true L.
-  - Base `sim.agent_max_force` 10000. 16 train + 4 test envs, 10/12 rounds each = 208 demos. Built into `configs/generated/v0/`.
+  - Base `sim.agent_max_force` 10000. Under the default holdout: 16 train + 4 test envs, plus 61 recorded-but-unused envs (`record_all`), each with 6 rounds = 486 demos. Built into `configs/generated/v0/`.
   - **Finding:** mass is clearly visible under `stop` (pushes light 138 / normal 86 / heavy 31 px) but nearly invisible under `low` friction (135 vs 131): a sliding block needs little force once moving. Lower strength doesn't fix it (and makes heavy+high immovable). That's a real physics interaction, flagged to the user.
+- **Full factorial, splits chosen at export** (user, 2026-10-25: full factorial, 6 demos per env):
+  - With `record_all: true` the suite records **every** level combination (v0: 3⁴ = 81 envs × `rounds.all` 6 = 486 rounds). Envs that are neither train nor test under the current holdout get split `unused`: recorded, not exported.
+  - The recorded `condition_info` holds only `env_name`, `levels` and `env_hash`, with no split or id.
+  - **To re-split:** `pts-suite build ... --holdout <knob> --out <dir>`, then `pts-export -c configs/datasets/v0.yaml --suite <dir>/suite.yaml`. Env names come from level names, so the same recordings map onto any rebuild.
+  - Export **refuses an `env_hash` mismatch**, i.e. level values changed after recording.
+  - `configs/augment/v0.yaml` now augments **every** recording, since any env may become train; export ignores augmented copies of test-env demos. Recipes can take `suite: <suite.yaml>` so that `suite_splits` follows a rebuilt suite.
+  - **Resume (by count):** `output.resume: true` (set in v0). A condition with *k* kept demos under `output.root` plays only `rounds − k` more rounds, on planned seeds it hasn't used yet (`record.kept_demos` / `rounds_to_skip`). A kept demo is a recording (not augmented), success or timeout, not undone or rejected, with the same `env_hash`. **Demos from an earlier seed plan count too**: the user's 123 demos from the first v0 build (12 envs, seeds 0–9 and 1000+) fill those envs, leaving 414 of 486 rounds (checked 2026-10-25). A resumed session logs a `resume` event.
+  - **Layouts** (= agent start, block start, block angle; the goal is fixed in v0): `record.layouts: per_env` (set in v0, user 2026-10-25) gives each env its own seeds, `layout_seed(env) = (int(env_hash,16) % 100000) * 100`, plus round *i*. That's stable across holdout rebuilds and factor reordering, so whichever envs become test envs have unseen layouts. `shared` (the default) keeps one seed plan per split.
+  - Session dirs started in the same second get a `-2` suffix (they used to crash with FileExistsError).
+- **Single-level holdouts** (user, 2026-10-25: one dataset per held-out level, not combinations):
+  - A factor's `holdout` may be `none` (all its levels train). `pts-suite build ... --only mass=heavy --test-context all` holds out just that level: v0 gives 54 train envs and all 27 heavy envs as tests.
+  - One variant per (factor, level) = 4 × 3 = **12 datasets**, a sum and not a product. A product (3⁴ = 81) is what you'd get by holding out one level of *every* factor at once, which is the suite default.
+  - Recipes and exports given a `suite` only touch that suite's envs: `data/raw` also holds the 75-demo `demo.yaml` session. `configs/augment/v0.yaml` sets `suite: configs/generated/v0/suite.yaml`, and export skips conditions outside its suite.
+  - Measured export render speed: about 1,275 frames/s per core. v0 demos average about 49 frames, and exports take about 4.5 KB per frame. One `--only` variant is about 1.2M train frames, about 5–6 GB, a few minutes on 10 cores. All 12 variants are about 70 GB. **Keep `output_root` off the iCloud Desktop.**
+- **Joint holdouts** (user, 2026-10-25; motivated by mass effects being strongest at damping 0):
+  - `--holdout-combo mass=heavy,friction=stop` (repeatable), or `holdout_combos: [{mass: heavy, friction: stop}]` in the spec.
+  - Test envs have **all** of the combo's levels at once. Other factors sit at reference, or at every train combination with `--test-context all`.
+  - Train is everything else, so each level alone is still trained on. Like `--only`, the CLI flag makes every factor hold nothing out on its own.
+  - v0 with that combo and `--test-context all`: 72 train, 9 test. Test kind is `combo:mass+friction`, stored as `Env.kind`. A combo env that's also a single-factor test is counted once.
+  - Export needs no changes: splits come from the built suite.
 - **Curation, `io/collection.py` + `pts-data ls|reject|unreject|trim|merge|verify`:**
   - `DemoIndex.scan` reads metadata only (`load_meta`).
   - Rejects come from `<collection>/curation.yaml` plus session undo events, and **augmented copies inherit their parent's rejection**.

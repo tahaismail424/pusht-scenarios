@@ -1,17 +1,19 @@
 # Augmentation for the v0 suite (configs/suites/v0.yaml).
 #   uv run pts-augment -c configs/augment/v0.yaml
 #
-# Train-env recordings only (test-env demos are used clean, for adaptation and
-# eval). Per parent: 3 bases (original, 1 random SE(2), left-right mirror) x
-# 25 noise copies spread over DINO-WM's levels = 75 demos. 160 train recordings
-# -> ~12k episodes, ~1.2M frames (LeWM's Push-T set: 18.7k / 2.3M).
+# Every recording is augmented: with the full-factorial (record_all) suite, any
+# env can end up train or test depending on the holdout chosen at export, and
+# export simply ignores augmented copies of test-env demos. Per parent: 3 bases
+# (original, 1 random SE(2), left-right mirror) x 25 noise copies = 75 demos.
+# 486 recordings -> ~36k augmented demos (states only, small). Under the default
+# holdout 16 train envs x 6 parents x 75 ~= 7k train episodes (~0.7M frames).
 # No palettes: color is one of the suite's factors.
 
 name: v0
 sources: [data/raw]
+suite: configs/generated/v0/suite.yaml   # only v0's envs (data/raw also holds other sessions)
 output_root: data/aug
 seed: 0
-suite_splits: [train]
 include_rejected: false
 include_failures: true
 

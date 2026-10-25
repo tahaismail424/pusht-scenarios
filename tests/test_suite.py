@@ -28,14 +28,44 @@ def spec(**changes):
 
 def test_v0_shape():
     suite = S.build(S.load_spec(V0))
-    train, test = suite.split('train'), suite.split('test')
-    assert len(train) == 16 and len(test) == 4
-    assert [e.env_id for e in suite.envs] == list(range(20))
+    train, test, unused = suite.split('train'), suite.split('test'), suite.split('unused')
+    assert (len(train), len(test), len(unused)) == (16, 4, 61)  # record_all: 3^4 = 81
+    assert [e.env_id for e in suite.envs] == list(range(81))
     assert all(e.split == 'train' for e in suite.envs[:16])  # train ids first: embedding index
+    assert all(e.split == 'test' for e in suite.envs[16:20])
     assert sorted(e.test_kind for e in test) == ['single:color', 'single:friction',
                                                  'single:mass', 'single:shape']
-    assert len({e.name for e in suite.envs}) == 20
-    assert len({e.env_hash for e in suite.envs}) == 20
+    assert len({e.name for e in suite.envs}) == 81
+    assert len({e.env_hash for e in suite.envs}) == 81
+
+
+def test_v0_records_every_combination():
+    rec = S.record_config(S.build(S.load_spec(V0)))
+    assert len(rec['conditions']) == 81
+    assert {c['rounds'] for c in rec['conditions']} == {6}
+    assert len({c['seed'] for c in rec['conditions']}) == 81  # per_env layouts
+    for c in rec['conditions']:
+        assert 'split' not in c['info'] and 'env_id' not in c['info']  # chosen at export
+    assert rec['output']['resume'] is True
+
+
+def test_record_all_resplit_keeps_names_and_hashes():
+    a = S.build(S.load_spec(V0))
+    b = S.build(S.apply_overrides(S.load_spec(V0), ['mass=heavy', 'friction=low']))
+    assert {(e.name, e.env_hash) for e in a.envs} == {(e.name, e.env_hash) for e in b.envs}
+    assert {e.name for e in a.split('train')} != {e.name for e in b.split('train')}
+    assert len(b.split('train')) == 16 and len(b.split('test')) == 4
+
+
+def test_record_all_with_test_context_all():
+    built = S.build(S.apply_overrides(S.load_spec(V0), [], 'all'))
+    assert (len(built.split('train')), len(built.split('test')), len(built.split('unused'))) == (16, 32, 33)
+
+
+def test_without_record_all_unused_envs_are_not_recorded():
+    built = S.build(spec())
+    assert not built.split('unused')
+    assert len(S.record_config(built)['conditions']) == len(built.envs)
 
 
 def test_every_env_shares_the_base():
@@ -155,10 +185,10 @@ def test_write_and_load_roundtrip(tmp_path):
 def test_cli(tmp_path, capsys):
     S.run(['build', str(V0), '--out', str(tmp_path), '--holdout', 'mass=high'])
     out = capsys.readouterr().out
-    assert '16 train, 4 test' in out and 'held out: heavy' in out
+    assert '16 train, 4 test environments, 61 recorded but unused' in out and 'held out: heavy' in out
     assert (tmp_path / 'suite.yaml').exists() and (tmp_path / 'record.yaml').exists()
     S.run(['show', str(V0), '--test-context', 'all'])
-    assert '16 train, 32 test' in capsys.readouterr().out
+    assert '16 train, 32 test environments, 33' in capsys.readouterr().out
 
 
 def test_record_config_partial_overrides():
@@ -180,3 +210,121 @@ def test_recorded_demos_carry_condition_info(mini):
         assert info['suite'] == 'mini' and info['split'] == env.split
         assert m.seed >= (1000 if env.split == 'test' else 0)
     assert np.mean([m.outcome == 'success' for m in metas if m.condition_info['split'] == 'test']) == 1.0
+
+
+def test_per_env_layouts_are_distinct_and_stable():
+    built = S.build(S.load_spec(V0))
+    seeds = [c['seed'] for c in S.record_config(built)['conditions']]
+    assert len(set(seeds)) == 81 and all(s % 100 == 0 for s in seeds)
+    rebuilt = S.build(S.apply_overrides(S.load_spec(V0), ['mass=heavy']))
+    by_name = {c['name']: c['seed'] for c in S.record_config(rebuilt)['conditions']}
+    assert {c['name']: c['seed'] for c in S.record_config(built)['conditions']} == by_name
+
+
+def test_shared_layouts_option():
+    raw = copy.deepcopy(MINI_SUITE)
+    raw['record'] = {**raw['record'], 'layouts': 'shared'}
+    seeds = {c['info']['split']: c['seed'] for c in S.record_config(S.build(S.spec_from_dict(raw)))['conditions']}
+    assert seeds == {'train': 0, 'test': 1000}
+    raw['record']['layouts'] = 'sometimes'
+    with pytest.raises(ValueError, match='layouts'):
+        S.record_config(S.build(S.spec_from_dict(raw)))
+
+
+# hold out a single level ('none' for the other factors, --only)
+
+
+def test_only_holds_out_a_single_level():
+    built = S.build(S.apply_overrides(S.load_spec(V0), [], 'all', only='mass=heavy'))
+    train, test = built.split('train'), built.split('test')
+    assert len(train) == 2 * 3 * 3 * 3 and len(test) == 27 and not built.split('unused')
+    assert all(e.levels['mass'] != 'heavy' for e in train)
+    assert all(e.levels['mass'] == 'heavy' and e.heldout_factors == ['mass'] for e in test)
+    ref = S.build(S.apply_overrides(S.load_spec(V0), [], 'reference', only='shape=plus'))
+    (t,) = ref.split('test')
+    assert t.levels == {'mass': 'light', 'friction': 'stop', 'color': 'default', 'shape': 'plus'}
+
+
+def test_holdout_none_per_factor():
+    s = S.apply_overrides(spec(), ['color=none'])
+    built = S.build(s)
+    assert {e.levels['color'] for e in built.split('train')} == {'default', 'warm', 'night'}
+    assert [e.test_kind for e in built.split('test')] == ['single:mass']
+
+
+def test_everything_none_is_an_error():
+    with pytest.raises(ValueError, match='no factor'):
+        S.build(S.apply_overrides(spec(), ['mass=none', 'color=none']))
+    with pytest.raises(ValueError, match='--only'):
+        S.apply_overrides(spec(), only='mass')
+
+
+def test_cli_only(capsys):
+    S.run(['show', str(V0), '--only', 'friction=low', '--test-context', 'all'])
+    out = capsys.readouterr().out
+    assert '54 train, 27 test environments' in out
+
+
+# joint holdouts (--holdout-combo)
+
+
+def combo_suite(*combos, context='all'):
+    return S.build(S.apply_overrides(S.load_spec(V0), [], context, combos=list(combos)))
+
+
+def test_joint_holdout_splits():
+    built = combo_suite('mass=heavy,friction=stop')
+    train, test = built.split('train'), built.split('test')
+    assert (len(train), len(test), len(built.split('unused'))) == (72, 9, 0)
+    both = lambda e: e.levels['mass'] == 'heavy' and e.levels['friction'] == 'stop'  # noqa: E731
+    assert all(both(e) for e in test) and not any(both(e) for e in train)
+    # each level alone is still trained on
+    assert any(e.levels['mass'] == 'heavy' for e in train)
+    assert any(e.levels['friction'] == 'stop' for e in train)
+    assert {e.test_kind for e in test} == {'combo:mass+friction'}
+    assert all(e.heldout_factors == ['mass', 'friction'] for e in test)
+    assert [e.env_id for e in built.envs[:72]] == list(range(72))  # train ids first
+
+
+def test_joint_holdout_reference_context():
+    built = combo_suite('friction=stop,mass=heavy', context='reference')  # order doesn't matter
+    (t,) = built.split('test')
+    assert t.levels == {'mass': 'heavy', 'friction': 'stop', 'color': 'default', 'shape': 'T'}
+    assert len(built.split('unused')) == 8
+
+
+def test_several_joint_holdouts():
+    built = combo_suite('mass=heavy,friction=stop', 'color=night,shape=plus')
+    kinds = sorted({e.test_kind for e in built.split('test')})
+    assert kinds == ['combo:color+shape', 'combo:mass+friction']
+    # 9 + 9 tests, minus the 1 env matching both combos (counted once)
+    assert len(built.split('test')) == 17 and len(built.split('train')) == 64
+
+
+def test_joint_holdout_validation():
+    for bad, match in [('mass=huge,friction=stop', 'no level'), ('weight=heavy', 'unknown factor'),
+                       ('massheavy', 'factor=level')]:
+        with pytest.raises(ValueError, match=match):
+            combo_suite(bad)
+
+
+def test_joint_holdout_in_spec_yaml():
+    raw = copy.deepcopy(MINI_SUITE)
+    raw['factors']['mass']['holdout'] = 'none'
+    raw['factors']['color']['holdout'] = 'none'
+    raw['holdout_combos'] = [{'color': 'warm', 'mass': 'heavy'}]
+    built = S.build(S.spec_from_dict(raw))
+    (t,) = built.split('test')
+    assert t.levels == {'mass': 'heavy', 'color': 'warm'} and len(built.split('train')) == 8
+
+
+def test_joint_holdout_roundtrip_and_cli(tmp_path, capsys):
+    S.run(['build', str(V0), '--holdout-combo', 'mass=heavy,friction=stop', '--test-context', 'all',
+           '--out', str(tmp_path)])
+    out = capsys.readouterr().out
+    assert '72 train, 9 test environments' in out and 'joint holdout: mass=heavy, friction=stop' in out
+    back = S.load_suite(tmp_path / 'suite.yaml')
+    assert {e.test_kind for e in back.split('test')} == {'combo:mass+friction'}
+    # recording plan is unchanged: still all 81 combinations
+    import yaml as _yaml
+    assert len(_yaml.safe_load((tmp_path / 'record.yaml').read_text())['conditions']) == 81

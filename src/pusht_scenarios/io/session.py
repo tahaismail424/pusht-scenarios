@@ -29,6 +29,9 @@ class OutputConfig:
     session_name: str = ''  # suffix for the session id (e.g. 'pilot')
     save_failures: bool = True  # also keep timeouts (meta.outcome = 'timeout')
     operator: str = ''
+    # skip rounds (condition, seed) that already have a kept demo under root,
+    # so a long suite can be recorded over several sessions
+    resume: bool = False
 
 
 def now_iso() -> str:
@@ -70,6 +73,12 @@ class SessionWriter:
         name = output.session_name
         self.session_id = session_id or (f'{stamp}-{name}' if name else stamp)
         self.path = Path(output.root) / self.session_id
+        if session_id is None:  # two sessions in the same second: add a suffix
+            base, k = self.session_id, 2
+            while self.path.exists():
+                self.session_id = f'{base}-{k}'
+                self.path = Path(output.root) / self.session_id
+                k += 1
         self.saved: list[tuple[str, Path]] = []  # (demo_id, path), in save order
         self.undone: list[str] = []
         self._events = None

@@ -147,10 +147,57 @@ class DemoRecorder(RoundHooks):
         )
 
 
+def kept_demos(config: RecordConfig) -> dict[str, set[int]]:
+    """Seeds of the kept demos per condition under output.root: recorded (not
+    augmented), success or timeout, not undone/rejected, and recorded with the
+    same level values (env_hash) as the condition now has. Any seed counts, so
+    demos recorded under an earlier seed plan are kept too."""
+    from pathlib import Path
+
+    from pusht_scenarios.io.collection import DemoIndex
+
+    root = Path(config.output.root)
+    if not root.exists():
+        return {}
+    hashes = {c.name: c.info.get('env_hash') for c in config.sandbox.conditions}
+    kept: dict[str, list[int]] = {}
+    for r in DemoIndex.scan(root).select(derived=False):
+        m = r.meta
+        if m.condition not in hashes or m.outcome not in ('success', 'timeout'):
+            continue
+        if hashes[m.condition] and m.condition_info.get('env_hash') != hashes[m.condition]:
+            continue
+        kept.setdefault(m.condition, []).append(m.seed)
+    return kept
+
+
+def rounds_to_skip(config: RecordConfig, kept: dict) -> set[tuple[str, int]]:
+    """Resume by count: a condition with k kept demos plays only its remaining
+    rounds - k planned rounds, on seeds it hasn't used yet."""
+    play = config.sandbox
+    skip = set()
+    for c in play.conditions:
+        n = play.rounds_per_condition if c.rounds is None else c.rounds
+        base = play.seed if c.seed is None else c.seed
+        planned = [base + i for i in range(n)]
+        done = kept.get(c.name, [])
+        remaining = max(0, n - len(done))
+        fresh = [s for s in planned if s not in set(done)][:remaining]
+        skip |= {(c.name, s) for s in planned if s not in fresh}
+    return skip
+
+
 def record(config: RecordConfig, env=None, device=None, get_events=pygame.event.get,
            verbose=True):
     """Run one recording session. Returns (session_writer, round results)."""
     play = config.sandbox
+    skip = set()
+    if config.output.resume:
+        kept = kept_demos(config)
+        skip = rounds_to_skip(config, kept)
+        if verbose and kept:
+            print(f'resume: {sum(map(len, kept.values()))} demos already kept under '
+                  f'{config.output.root}; {len(skip)} planned rounds skipped')
     if play.shuffle_conditions and play.shuffle_seed is None:
         # pin the random order so the session snapshot records it
         play.shuffle_seed = random.SystemRandom().randrange(2**31)
@@ -162,8 +209,10 @@ def record(config: RecordConfig, env=None, device=None, get_events=pygame.event.
     }
     with SessionWriter(config.output, snapshot) as session:
         recorder = DemoRecorder(session, device, config, verbose=verbose)
+        if skip:
+            session.log('resume', skipped=len(skip))
         results = sandbox.run_session(play, env=env, device=device,
-                                      get_events=get_events, hooks=recorder)
+                                      get_events=get_events, hooks=recorder, skip=skip)
     return session, results
 
 

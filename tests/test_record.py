@@ -292,3 +292,59 @@ def test_demo_yaml_conditions_record(env, tmp_path):
     for _, path in session.saved:
         d = load_demo(path)
         assert replay.divergence(d, replay.replay(d)) == 0.0
+
+
+# resuming a long suite over several sessions
+
+
+def test_resume_skips_recorded_rounds(env, tmp_path):
+    conds = [{'name': n, **ON_GOAL} for n in ('a', 'b')]
+    top = dict(rounds_per_condition=2, output={'root': str(tmp_path), 'resume': True})
+
+    def session(events):
+        raw = {'max_steps': 40, 'fps': 0, 'wait_for_input': False, 'conditions': conds, **top}
+        cfg = record.record_config_from_dict(raw)
+        return record.record(cfg, env=env, device=InputDevice(joystick=IdleStick()),
+                             get_events=events, verbose=False)
+
+    # session 1: one round (5 frames to succeed), then Q
+    s1, r1 = session(scripted(*([[]] * 5), [key(pygame.K_q)]))
+    assert [r.outcome for r in r1] == ['success', 'quit'] and len(s1.saved) == 1
+    # session 2: only the 3 remaining rounds are played
+    s2, r2 = session(lambda: [])
+    assert [(r.condition, r.seed, r.outcome) for r in r2] == [('a', 1, 'success'), ('b', 0, 'success'),
+                                                              ('b', 1, 'success')]
+    # everything is recorded now; an undone demo makes its round playable again
+    with open(s2.path / 'events.jsonl', 'a') as f:
+        f.write('{"event": "undo", "demo_id": "%s"}\n' % s2.saved[-1][0])
+    s3, r3 = session(lambda: [])
+    assert [(r.condition, r.seed) for r in r3] == [('b', 1)]
+
+
+def test_resume_off_records_everything(env, tmp_path):
+    conds = [{'name': 'a', **ON_GOAL}]
+    for _ in range(2):
+        cfg = record.record_config_from_dict({'max_steps': 40, 'fps': 0, 'wait_for_input': False,
+                                              'rounds_per_condition': 2, 'conditions': conds,
+                                              'output': {'root': str(tmp_path)}})
+        _, results = record.record(cfg, env=env, device=InputDevice(joystick=IdleStick()),
+                                   get_events=lambda: [], verbose=False)
+        assert len(results) == 2
+
+
+def test_resume_counts_demos_from_an_earlier_seed_plan(env, tmp_path):
+    # demos recorded under another seed plan still count toward the target
+    def session(seed, rounds):
+        cfg = record.record_config_from_dict({
+            'max_steps': 40, 'fps': 0, 'wait_for_input': False, 'seed': seed,
+            'rounds_per_condition': rounds, 'conditions': [{'name': 'a', **ON_GOAL}],
+            'output': {'root': str(tmp_path), 'resume': True}})
+        return record.record(cfg, env=env, device=InputDevice(joystick=IdleStick()),
+                             get_events=lambda: [], verbose=False)
+
+    _, first = session(seed=50, rounds=2)  # old plan: seeds 50, 51
+    _, second = session(seed=0, rounds=3)  # new plan wants 3: only 1 more, on a fresh seed
+    assert [r.seed for r in first] == [50, 51]
+    assert [r.seed for r in second] == [0]
+    _, third = session(seed=0, rounds=2)  # already have 3 >= 2: nothing to play
+    assert third == []
