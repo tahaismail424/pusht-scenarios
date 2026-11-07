@@ -1,0 +1,34 @@
+# v0.5 friction rough: floor friction 1.0 only (damping 1).
+#
+#   uv run pts-export -c configs/datasets/v0.5_friction_rough.yaml --workers 16
+#
+# Writes <output_root>/pusht_v05_friction_rough_{train,val}.h5 (+ .episodes.jsonl, manifest).
+# Four-floor suite (configs/generated/v0.5_friction4): env_id 0 stock, 1 slippery,
+# 2 medium (floor friction 0.25), 3 rough (1.0); stock and slippery keep the
+# ids they have in the two-floor exports. No test files: nothing is held out.
+# val = ~10% of each env's recorded demos with all 101 of their copies, split
+# by a hash of (seed, demo id): with seed 0, stock and slippery have exactly
+# the same val demos as in the two-floor exports, so all results compare.
+#
+# Every row carries variation.* (sim.damping, sim.floor_friction), so swm's
+# dataset eval replays each val episode on its own floor.
+#
+# Before exporting, check every env has >= 185 train demos (LeWM's count):
+#   uv run python -c "from pusht_scenarios.export import hdf5 as X; from pusht_scenarios.io.collection import DemoIndex as D; s=X.load_spec('configs/datasets/v0.5_friction_rough.yaml'); i=D.scan(*s.sources); [print(k, __import__('collections').Counter(r.meta.condition for r in v if not r.is_derived)) for k, v in X.assign_splits(s, i, X.resolve_envs(s, i)).items() if v]"
+
+name: pusht_v05_friction_rough
+suite: configs/generated/v0.5_friction4/suite.yaml
+sources: [data/v0.5_friction/raw, data/v0.5_friction/aug/dino_wm, data/v0.5_friction/aug/dino_wm_f4]
+output_root: data/v0.5_friction/export
+resolution: 224
+seed: 0
+
+select:
+  conditions: [friction-rough]
+  include_rejected: false
+  include_failures: true       # failed noisy replays kept, as in LeWM/DINO-WM
+  include_timeouts: false      # recorded demos that timed out are not experts
+  max_noise: null
+
+splits:
+  val_fraction: 0.1

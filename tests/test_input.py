@@ -91,6 +91,14 @@ def test_mouse_far_away_is_clipped(env):
     np.testing.assert_array_equal(device.read(env), [1, -1])
 
 
+def test_mouse_max_caps_speed_but_not_fine_moves(env):
+    agent = np.array(env.unwrapped.agent.position)
+    far = InputDevice(use_hid=False, mouse_pos=lambda: tuple(agent + [300, -400]), mouse_max=0.35)
+    np.testing.assert_allclose(far.read(env), [0.21, -0.28], atol=1e-6)  # direction kept, |a| = 0.35
+    near = InputDevice(use_hid=False, mouse_pos=lambda: tuple(agent + [20, -10]), mouse_max=0.35)
+    np.testing.assert_allclose(near.read(env), [0.2, -0.1], atol=1e-6)
+
+
 # End to end: the action actually moves the agent the intended way in the env.
 
 

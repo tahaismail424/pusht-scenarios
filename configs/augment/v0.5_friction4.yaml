@@ -1,0 +1,37 @@
+# v0.5 four-floor augmentation: the same recipe as configs/augment/v0.5_friction.yaml
+# (LeWM / DINO-WM: 101 episodes per demo), applied ONLY to the two new floors.
+#   uv run pts-augment -c configs/augment/v0.5_friction4.yaml --workers 16
+#
+# stock and slippery were already augmented into data/v0.5_friction/aug/dino_wm
+# by the two-floor recipe. Copies are a deterministic function of (seed, parent),
+# so re-running that would give identical files; this recipe adds a sibling
+# directory, dino_wm_f4, instead (recipes refuse to write into an existing one).
+# The four-floor exports read both directories.
+#
+# Output: data/v0.5_friction/aug/dino_wm_f4/demos/, ~2 x 215 x 100 = ~43k small .npz files.
+# Write it on the cluster's scratch or another non-iCloud disk, not ~/Desktop.
+
+name: dino_wm_f4
+sources: [data/v0.5_friction/raw]
+suite: configs/generated/v0.5_friction4/suite.yaml
+conditions: [friction-medium, friction-rough]   # stock/slippery: already in dino_wm
+output_root: data/v0.5_friction/aug
+seed: 0
+include_rejected: false
+include_failures: false        # only successful demos are parents (LeWM's 185 all succeeded);
+                               # recorded timeouts are left out of export too
+
+bases:
+  original: true               # no transforms
+
+noise:                         # DINO_WM_NOISE_LEVELS with 10 (not 11) clean copies
+  - [0.0, 10]                  #   + the exported original = 11 clean
+  - [0.003, 10]
+  - [0.005, 10]
+  - [0.01, 10]
+  - [0.015, 10]
+  - [0.02, 10]
+  - [0.025, 10]
+  - [0.03, 10]
+  - [0.07, 10]
+  - [0.15, 10]

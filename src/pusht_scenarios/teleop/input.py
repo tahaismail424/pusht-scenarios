@@ -19,6 +19,7 @@ class InputDevice:
         joystick=None,
         mouse_pos=None,
         use_hid=True,
+        mouse_max=None,
     ):
         """
         Args:
@@ -36,12 +37,17 @@ class InputDevice:
                 defaults to pygame.mouse.get_pos. Injectable for tests.
             use_hid: fall back to hidapi when SDL sees no joystick (SDL drops
                 some Bluetooth gamepads on macOS; see hid_gamepad.py).
+            mouse_max: the mouse's speed cap: the action's length is limited to
+                this (the stick's `gain` equivalent; 0.35 ~ 145 px/s). Within
+                mouse_max * 100 px of the agent the action is unchanged. None:
+                no cap beyond the [-1, 1] box (~410 px/s on a diagonal ~580).
         """
         self.stick_thresh = stick_thresh
         self.gain = gain
         self.precision_gain = precision_gain
         self.precision_button = precision_button
         self.mouse_pos = mouse_pos or pygame.mouse.get_pos
+        self.mouse_max = mouse_max
 
         if joystick is None:
             pygame.joystick.init()
@@ -125,6 +131,10 @@ class InputDevice:
         mouse = np.array(self.mouse_pos(), dtype=np.float64)
         agent = np.array(base.agent.position, dtype=np.float64)
         action = (mouse - agent) / base.action_scale
+        if self.mouse_max is not None:
+            norm = np.linalg.norm(action)
+            if norm > self.mouse_max:
+                action = action * (self.mouse_max / norm)
         return np.clip(action, -1, 1).astype(np.float32)
 
 

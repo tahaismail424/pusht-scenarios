@@ -221,9 +221,12 @@ class PushT(gym.Env):
                             shape=(),
                             dtype=np.float64,
                         ),
+                        # only matters with a finite agent_max_force: push
+                        # speed is then capped near max_force * dt / mass
+                        # (~200/mass px/s at 20000), so mass <~ 1.5 = stock
                         'block_mass': swm_spaces.Box(
                             low=0.1,
-                            high=10.0,
+                            high=50.0,
                             init_value=1.0,
                             shape=(),
                             dtype=np.float64,

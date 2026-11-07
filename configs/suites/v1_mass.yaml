@@ -1,0 +1,59 @@
+# v1 mass suite: stock Push-T at five block masses, for adaptive models.
+#
+#   uv run pts-suite build configs/suites/v1_mass.yaml --out configs/generated/v1_mass
+#   uv run pts-sandbox -c configs/generated/v1_mass/record.yaml   # warm up (records nothing)
+#   uv run pts-record  -c configs/generated/v1_mass/record.yaml   # record (resumable)
+#
+# Then on the cluster: configs/augment/v1_mass.yaml and configs/datasets/v1_mass_*.yaml.
+#
+# Mass only matters because the agent has a finite strength (sim.agent_max_force
+# 20000, all envs). On the stock floor the block has no momentum, so mass just
+# caps how fast it can be pushed: ~200/mass px/s (measured 2026-11-06). Below
+# ~1.5 that is faster than the agent moves (~123 px/s pushing at the mouse cap),
+# so lighter masses are identical to stock: the sweep can only go heavier.
+# Levels roughly halve the push speed each step:
+#
+#   mass         1      3     5     10    20
+#   push speed   123    67    40    20    10  px/s
+#   LeWM ckpt    88%    90%   73%   48%   -   (released checkpoint, trained on stock)
+#
+# Reuses v0.5's recordings: `normal` and `heavy` keep the exact values (and the
+# env names mass-normal / mass-heavy) they were recorded with, so their
+# env_hash is unchanged, and output.root is v0.5's directory. Resume counts
+# those demos and plays only what is missing.
+#
+# Size: like v0.5 and LeWM, 215 demos per env; ~10% of parents go to val
+# (by demo), leaving ~194 train demos (>= LeWM's 185) x 101 copies per env.
+
+name: v1mass                # (letters+digits: it goes into session dir names)
+
+base:
+  sim.agent_max_force: 20000.0
+
+record_all: false
+factors:
+  mass:                     # block mass (hidden)
+    ordered: true
+    levels:                 # env_id 0..4 in this order
+      normal:     {sim.block_mass: 1.0}    # = stock (v0.5 'normal')
+      medium:     {sim.block_mass: 3.0}
+      hefty:      {sim.block_mass: 5.0}
+      heavy:      {sim.block_mass: 10.0}   # v0.5 'heavy'
+      superheavy: {sim.block_mass: 20.0}
+    holdout: none           # all train envs; each gets its own val demos
+    reference: normal
+
+record:
+  rounds: {train: 215}
+  seed: {train: 0}
+  layouts: shared           # every mass plays the same start layouts (seeds 0..214)
+  # 300 s per round: at mass 20 the block moves ~10 px/s, so a long push is
+  # tens of seconds. A timeout still counts as a played round on resume.
+  max_steps: 3000
+  fps: 10
+  hold_steps: 5
+  shuffle_conditions: true
+  block_size: 10            # alternate envs every 10 rounds
+  device: {gain: 0.35, precision_gain: 0.1, precision_button: rightshoulder, mouse_max: 0.35}
+  # same root as v0.5, so its normal/heavy demos count toward these envs
+  output: {root: data/v0.5/raw, save_failures: true, operator: taha, resume: true}

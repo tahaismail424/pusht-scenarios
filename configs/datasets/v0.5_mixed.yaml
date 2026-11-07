@@ -1,0 +1,38 @@
+# v0.5 mixed: Both envs together, nothing held out: train on both, val = held-out demos
+# of both (the same parents as the normal and heavy files' val), so val
+# results can be reported per env via the env_id column.
+#
+#   uv run pts-export -c configs/datasets/v0.5_mixed.yaml --workers 16
+#
+# Writes <output_root>/pusht_v05_mixed_{train,val}.h5 (+ .episodes.jsonl, manifest).
+# No test files: v0.5 holds out no env. val = ~10% of each env's recorded demos
+# with all 101 of their copies (split by demo, never by episode). The split is
+# a hash of (seed, demo id), so normal/heavy/mixed agree on which demos are val.
+# 'v05' not 'v0.5' in file names: tools that strip extensions trip over the dot.
+#
+# Every row carries variation.* (incl. variation.sim.block_mass and
+# sim.agent_max_force), env_id and seed, so swm's dataset eval
+# (PushT.reset_options_from_dataset) re-creates each episode's physics: eval
+# windows from the heavy file are played in heavy physics automatically.
+# Frames are drawn without pymunk's red contact dots (LeWM's original frames
+# have them; the released checkpoint scored 88-89% on ours regardless).
+#
+# Before exporting, check every env has >= 185 train demos (LeWM's count):
+#   uv run python -c "from pusht_scenarios.export import hdf5 as X; from pusht_scenarios.io.collection import DemoIndex as D; s=X.load_spec('configs/datasets/v0.5_mixed.yaml'); i=D.scan(*s.sources); [print(k, __import__('collections').Counter(r.meta.condition for r in v if not r.is_derived)) for k, v in X.assign_splits(s, i, X.resolve_envs(s, i)).items() if v]"
+
+name: pusht_v05_mixed
+suite: configs/generated/v0.5/suite.yaml
+sources: [data/v0.5/raw, data/v0.5/aug/dino_wm]
+output_root: data/v0.5/export
+resolution: 224
+seed: 0
+
+select:
+  conditions: null           # both envs: env_id 0 = normal, 1 = heavy
+  include_rejected: false
+  include_failures: true       # failed noisy replays kept, as in LeWM/DINO-WM
+  include_timeouts: false      # recorded demos that timed out are not experts
+  max_noise: null
+
+splits:
+  val_fraction: 0.1

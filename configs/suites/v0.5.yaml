@@ -1,0 +1,60 @@
+# v0.5 suite: stock LeWM Push-T at two block masses, nothing else changed.
+#
+#   uv run pts-suite build configs/suites/v0.5.yaml --out configs/generated/v0.5
+#   uv run pts-sandbox -c configs/generated/v0.5/record.yaml   # warm up (records nothing)
+#   uv run pts-record  -c configs/generated/v0.5/record.yaml   # record (resumable)
+#
+# Then on the cluster: configs/augment/v0.5.yaml and configs/datasets/v0.5_*.yaml.
+#
+# Goal: show a world model trained on stock-mass Push-T degrades when the block
+# is heavy, then compare normal-only / heavy-only / mixed (later: adaptive) models.
+# Measured with the released LeWM checkpoint (2026-10-26, agent_max_force 20000):
+# mass 1 -> 88% (stock kinematic agent: 89%), mass 10 -> 48%.
+#
+# Everything except mass is swm's default, as in LeWM's pusht_expert_train:
+# gray T, default colors, fixed goal (center, 45 deg), stops-dead floor
+# (damping 0), random agent/block start per seed. Both envs share one finite
+# agent strength, which is what makes mass matter (CLAUDE.md, knob #6).
+#
+# Size: LeWM's set is 185 demos x 101 copies = 18,685 episodes. Each env here
+# records 215 demos; ~10% of parents go to val (by demo, so ~21), leaving ~194
+# for train (>= 185 with ~98% probability; check before exporting, see
+# configs/datasets/v0.5_normal.yaml). x 101 copies -> >= 18,685 train episodes per env.
+
+name: v05                   # (letters+digits: it goes into session dir names)
+
+base:
+  sim.agent_max_force: 20000.0
+
+record_all: false
+factors:
+  mass:                     # block mass (hidden)
+    ordered: true
+    levels:
+      normal: {sim.block_mass: 1.0}    # stock mass
+      heavy:  {sim.block_mass: 10.0}
+    holdout: none           # both envs are train envs (env_id 0 = normal, 1 = heavy)
+    reference: normal
+
+record:
+  rounds: {train: 215}
+  seed: {train: 0}
+  layouts: shared           # both masses play the same 215 start layouts (seeds 0..214)
+  # 150 s per round: deliberate play on a heavy block takes a while. LeWM's
+  # demos run 49-246 steps; expect heavy ones to run several times longer.
+  max_steps: 1500
+  fps: 10
+  hold_steps: 5
+  shuffle_conditions: true  # which mass comes first is random...
+  block_size: 10            # ...then they alternate every 10 rounds, so practice
+                            # and fatigue don't line up with mass
+  # gain 0.35: ~145 px/s at full tilt (0.6 was ~245 px/s and gave v0 demos a
+  # median of ~48 steps vs LeWM's ~123). Free-space speed only: a heavy block
+  # is slowed by the agent's strength, not the gain.
+  # mouse_max 0.35: the same ~145 px/s cap for the mouse (the agent chases the
+  # cursor; within 35 px it follows exactly, farther it moves at the cap).
+  # Uncapped, the mouse reaches ~410 px/s.
+  device: {gain: 0.35, precision_gain: 0.1, precision_button: rightshoulder, mouse_max: 0.35}
+  # resume: a new session plays only the rounds still missing under root, so
+  # the 430 rounds can be spread over several sittings (Q to stop any time)
+  output: {root: data/v0.5/raw, save_failures: true, operator: taha, resume: true}

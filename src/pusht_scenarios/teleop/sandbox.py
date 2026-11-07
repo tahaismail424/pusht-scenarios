@@ -51,6 +51,10 @@ class SandboxConfig:
     # play the condition blocks in random order (seeds within a block unchanged)
     shuffle_conditions: bool = False
     shuffle_seed: int | None = None  # None: a fresh random order every session
+    # interleave conditions in blocks of this many rounds (round-robin, in
+    # condition order), so practice and fatigue spread over every condition;
+    # None: each condition's rounds in one block
+    block_size: int | None = None
 
 
 @dataclass
@@ -76,6 +80,8 @@ def config_from_dict(raw: dict) -> SandboxConfig:
         raise ValueError(f'unknown sandbox config keys: {sorted(unknown)}')
     conditions = raw.pop('conditions', None)
     config = SandboxConfig(**raw)
+    if config.block_size is not None and config.block_size < 1:
+        raise ValueError('block_size must be >= 1')
     if conditions is not None:
         if not conditions:
             raise ValueError('conditions must not be empty')
@@ -103,6 +109,25 @@ def condition_order(config: SandboxConfig) -> list[Condition]:
     if config.shuffle_conditions:
         random.Random(config.shuffle_seed).shuffle(order)
     return order
+
+
+def play_plan(config: SandboxConfig, skip=None) -> list[tuple[Condition, int]]:
+    """(condition, round index) in play order, leaving out skipped
+    (condition name, seed) rounds. Blocks are cut after skipping, so a resumed
+    session keeps alternating conditions."""
+    skip = skip or set()
+    per_condition = []
+    for c in condition_order(config):
+        n = config.rounds_per_condition if c.rounds is None else c.rounds
+        base = config.seed if c.seed is None else c.seed
+        per_condition.append([(c, i) for i in range(n) if (c.name, base + i) not in skip])
+    if config.block_size is None:
+        return [r for rs in per_condition for r in rs]
+    plan, k = [], config.block_size
+    for start in range(0, max(map(len, per_condition), default=0), k):
+        for rs in per_condition:
+            plan.extend(rs[start:start + k])
+    return plan
 
 
 def reset_options(env, condition: Condition) -> dict:
@@ -261,15 +286,7 @@ def run_session(
     results = []
     clock = pygame.time.Clock()
 
-    def rounds(c):
-        return config.rounds_per_condition if c.rounds is None else c.rounds
-
-    skip = skip or set()
-    plan = []  # (condition, round index) in play order
-    for condition in condition_order(config):
-        base = config.seed if condition.seed is None else condition.seed
-        plan.extend((condition, i) for i in range(rounds(condition))
-                    if (condition.name, base + i) not in skip)
+    plan = play_plan(config, skip)  # (condition, round index) in play order
     n = len(plan)
 
     k = 0

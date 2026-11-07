@@ -49,28 +49,42 @@ class Factor:
     name: str
     levels: dict  # level name -> variation_values (ordered: low -> high)
     ordered: bool = True
-    holdout: str | None = None  # level name, low|middle|high, or 'none'; None = suite default
+    holdout: str | list | None = None  # level name(s), low|middle|high, or 'none'; None = suite default
     reference: str | None = None  # train level used while another factor is tested
 
-    def heldout_level(self, default_policy: str) -> str | None:
-        """The held-out level, or None if this factor holds nothing out ('none')."""
+    def heldout_levels(self, default_policy: str) -> list[str]:
+        """The held-out levels: one, several (holdout: [a, b]), or none ('none')."""
         choice = self.holdout or default_policy
         names = list(self.levels)
+        if isinstance(choice, (list, tuple)):
+            bad = [c for c in choice if c not in self.levels]
+            if bad:
+                raise ValueError(f'factor {self.name}: unknown holdout levels {bad} ({names})')
+            if len(set(choice)) >= len(names):
+                raise ValueError(f'factor {self.name}: holdout leaves no train level')
+            return [n for n in names if n in choice]  # level order
         if choice in self.levels:
-            return choice
+            return [choice]
         if choice == 'none':
-            return None
+            return []
         if choice not in POLICIES:
             raise ValueError(f'factor {self.name}: unknown holdout {choice!r} '
-                             f"(a level name, one of {POLICIES}, or 'none')")
+                             f"(a level name or list of them, one of {POLICIES}, or 'none')")
         if not self.ordered:
             raise ValueError(f'factor {self.name} is categorical: holdout must name a level '
                              f'({names}), not {choice!r}')
-        return {'low': names[0], 'middle': names[len(names) // 2], 'high': names[-1]}[choice]
+        return [{'low': names[0], 'middle': names[len(names) // 2], 'high': names[-1]}[choice]]
+
+    def heldout_level(self, default_policy: str) -> str | None:
+        """The single held-out level, or None if this factor holds nothing out."""
+        held = self.heldout_levels(default_policy)
+        if len(held) > 1:
+            raise ValueError(f'factor {self.name} holds out several levels: {held}')
+        return held[0] if held else None
 
     def train_levels(self, default_policy: str) -> list[str]:
-        held = self.heldout_level(default_policy)
-        return [n for n in self.levels if n != held]
+        held = self.heldout_levels(default_policy)
+        return [n for n in self.levels if n not in held]
 
     def reference_level(self, default_policy: str) -> str:
         train = self.train_levels(default_policy)
@@ -253,12 +267,12 @@ def env_name(spec: SuiteSpec, levels: dict) -> str:
 def build(spec: SuiteSpec) -> Suite:
     p = spec.holdout_policy
     factors = spec.factors
-    held = {f.name: f.heldout_level(p) for f in factors}
+    held = {f.name: f.heldout_levels(p) for f in factors}
     ref = {f.name: f.reference_level(p) for f in factors}
 
+    # nothing held out (every holdout none, no combos) is fine: a train-only
+    # suite, e.g. v0.5's two masses
     joint = spec.holdout_combos
-    if all(h is None for h in held.values()) and not joint:
-        raise ValueError('no factor holds out a level (every holdout is none) and no holdout combo')
 
     def in_combo(levels):
         return any(all(levels[f] == lv for f, lv in c.items()) for c in joint)
@@ -269,14 +283,13 @@ def build(spec: SuiteSpec) -> Suite:
         if not in_combo(levels):
             combos.append(('train', levels, []))
     for f in factors:
-        if held[f.name] is None:
-            continue
         others = [g for g in factors if g is not f]
         contexts = ([{g.name: ref[g.name] for g in others}] if spec.test_context == 'reference'
                     else [dict(zip((g.name for g in others), c))
                           for c in itertools.product(*(g.train_levels(p) for g in others))])
-        for ctx in contexts:
-            combos.append(('test', {**ctx, f.name: held[f.name]}, [f.name]))
+        for level in held[f.name]:
+            for ctx in contexts:
+                combos.append(('test', {**ctx, f.name: level}, [f.name]))
     for c in joint:
         others = [g for g in factors if g.name not in c]
         contexts = ([{g.name: ref[g.name] for g in others}] if spec.test_context == 'reference'
@@ -284,16 +297,17 @@ def build(spec: SuiteSpec) -> Suite:
                           for ctx in itertools.product(*(g.train_levels(p) for g in others))])
         for ctx in contexts:
             combos.append(('test', {**ctx, **c}, list(c), 'combo:' + '+'.join(c)))
-    tested = [f for f in factors if held[f.name] is not None]
+    tested = [f for f in factors if held[f.name]]
     if spec.include_all_heldout and len(tested) > 1:
-        combos.append(('test', {f.name: held[f.name] if held[f.name] is not None else ref[f.name]
-                                for f in factors}, [f.name for f in tested]))
+        for combo in itertools.product(*(held[f.name] or [ref[f.name]] for f in factors)):
+            combos.append(('test', dict(zip((f.name for f in factors), combo)),
+                           [f.name for f in tested]))
     if spec.record_all:
         seen = {tuple(c[1][f.name] for f in factors) for c in combos}
         for combo in itertools.product(*(list(f.levels) for f in factors)):
             if combo not in seen:
                 levels = dict(zip((f.name for f in factors), combo))
-                combos.append(('unused', levels, [f.name for f in factors if levels[f.name] == held[f.name]]))
+                combos.append(('unused', levels, [f.name for f in factors if levels[f.name] in held[f.name]]))
 
     envs, seen_names = [], set()
     for split, levels, heldout, *kind in combos:
@@ -400,7 +414,7 @@ def table(suite: Suite) -> str:
              + (f', {len(unused)} recorded but unused (record_all)' if unused else '')]
     for f in suite.spec.factors:
         p = suite.spec.holdout_policy
-        lines.append(f'  {f.name:<10} levels {list(f.levels)}  held out: {f.heldout_level(p) or "-"}'
+        lines.append(f'  {f.name:<10} levels {list(f.levels)}  held out: {", ".join(f.heldout_levels(p)) or "-"}'
                      f'  reference: {f.reference_level(p)}')
     for c in suite.spec.holdout_combos:
         lines.append(f'  joint holdout: {", ".join(f"{k}={v}" for k, v in c.items())}')

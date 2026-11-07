@@ -381,3 +381,30 @@ def test_export_with_a_joint_holdout(factorial, tmp_path):
     assert names['test_adapt'] == names['test_eval'] == {'mass-heavy.color-warm'}
     assert len(names['train']) == 8
     assert 'mass-heavy.color-default' in names['train'] and 'mass-light.color-warm' in names['train']
+
+
+def test_train_only_suite_exports_train_and_val_of_every_env(factorial, tmp_path):
+    # v0.5 mixed: nothing held out, val = held-out parents of every env
+    from pusht_scenarios import suite as S
+
+    from conftest import MINI_SUITE
+
+    raw = {**MINI_SUITE, 'record_all': True}
+    built = S.build(S.apply_overrides(S.spec_from_dict(raw), ['mass=none', 'color=none']))
+    assert built.split('test') == []
+    S.write(built, tmp_path / 'suite')
+    base = {'name': 'f', 'sources': [str(factorial['raw'])], 'output_root': str(tmp_path / 'out'),
+            'suite': str(tmp_path / 'suite' / 'suite.yaml'), 'splits': {'val_fraction': 0.5}}
+    names = _split_names(X.spec_from_dict(base))
+    assert names['test_adapt'] == names['test_eval'] == set()
+    assert len(names['train'] | names['val']) == 9 and len(names['val']) > 1
+
+    # one condition only (v0.5 normal / heavy): same split of its parents
+    one = sorted(names['val'])[0]
+    only = _split_names(X.spec_from_dict({**base, 'select': {'conditions': [one]}}))
+    assert only['val'] == {one} and only['train'] <= {one}
+
+    X.run_export(X.spec_from_dict(base), workers=1, verbose=False)
+    out = tmp_path / 'out'
+    assert (out / 'f_train.h5').exists() and (out / 'f_val.h5').exists()
+    assert not (out / 'f_test_eval.h5').exists()

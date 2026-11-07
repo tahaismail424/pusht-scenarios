@@ -1,0 +1,50 @@
+# v0.5 friction, four floors: the two-floor suite (configs/suites/v0.5_friction.yaml)
+# plus floor friction 0.25 and 1.0 at the same damping.
+#
+#   uv run pts-suite build configs/suites/v0.5_friction4.yaml --out configs/generated/v0.5_friction4
+#   uv run pts-sandbox -c configs/generated/v0.5_friction4/record.yaml   # warm up
+#   uv run pts-record  -c configs/generated/v0.5_friction4/record.yaml   # record (resumable)
+#
+# No re-recording: stock and slippery keep exactly the level values they were
+# recorded with, so their env_hash is unchanged, and output.root is the same
+# directory. Resume therefore counts the 215 + 215 demos already there and
+# plays only the 430 rounds of medium and rough (block_size 10 alternates
+# just those two). New levels go after the old ones, so stock and slippery
+# keep env_id 0 and 1 (the same ids as in the two-floor exports).
+#
+# Released LeWM checkpoint, floor-friction sweep (damping 1 = momentum on,
+# 2026-10-26): stock 89%, 0 -> 30%, 0.1 -> 43%, 0.25 -> 60%, 0.5-2 -> 65-69%.
+#
+#   stock:    swm exactly (damping 0: the block stops dead when you let go)
+#   slippery: damping 1 (the block keeps its momentum) + floor friction 0.1:
+#             a pushed block slides and spins on, slowing gently
+#   medium:   damping 1 + floor friction 0.25: slides, but stops sooner
+#   rough:    damping 1 + floor friction 1.0: a short slide, then it stops
+# Both use swm's kinematic agent (unlimited strength): no strength cap, since
+# mass is fixed at 1 here. So `stock` is exactly LeWM's environment.
+
+name: v05friction4          # (letters+digits: it goes into session dir names)
+
+record_all: false
+factors:
+  friction:                 # floor (hidden)
+    ordered: true
+    levels:
+      stock:    {}
+      slippery: {sim.damping: 1.0, sim.floor_friction: 0.1}
+      medium:   {sim.damping: 1.0, sim.floor_friction: 0.25}
+      rough:    {sim.damping: 1.0, sim.floor_friction: 1.0}
+    holdout: none           # all train envs: env_id 0 stock, 1 slippery, 2 medium, 3 rough
+    reference: stock
+
+record:
+  rounds: {train: 215}      # ~194 train demos per env after a 10% val split (>= LeWM's 185)
+  seed: {train: 0}
+  layouts: shared           # all floors play the same layouts (seeds 0..214)
+  max_steps: 1500           # 150 s: a sliding block can take a while to settle on the goal
+  fps: 10
+  hold_steps: 5             # the block must stay on the goal 5 steps: no drifting through it
+  shuffle_conditions: true
+  block_size: 10
+  device: {gain: 0.35, precision_gain: 0.1, precision_button: rightshoulder, mouse_max: 0.35}
+  output: {root: data/v0.5_friction/raw, save_failures: true, operator: taha, resume: true}

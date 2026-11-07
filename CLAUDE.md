@@ -319,6 +319,34 @@ User decisions (2026-10-25):
 - **CLI exit codes:** every module has `run(argv)` (returns results, used by tests) and `main()` (returns None). The entry points do `sys.exit(main())`, so returning an object used to print it and exit 1.
 - Tests: `test_suite.py`, `test_collection.py`, `test_eval_hooks.py`, `test_export.py`, and the session-scoped `mini` fixture in `conftest.py` (mini suite → recordings → augmentation). 291 total, about 26 s.
 
+## v0.5 (set up 2026-10-26)
+
+First experiment: stock Push-T at two block masses. The released LeWM checkpoint with `agent_max_force` 20000 scores mass 1 → 88% (stock 89%), mass 10 → 48%.
+- `configs/suites/v0.5.yaml` (suite name `v05`: suite names are letters+digits only) → `configs/generated/v0.5/`.
+  - Envs: `mass-normal` (env_id 0, mass 1) and `mass-heavy` (1, mass 10), both train, nothing held out. **Train-only suites are now allowed.**
+  - 215 rounds each on shared seeds 0..214, `max_steps` 1500, stick gain 0.35, and `mouse_max` 0.35 (new `InputDevice` option: caps the mouse action's length, so the same ~145 px/s top speed; the user records v0.5 with the mouse).
+  - `block_size: 10`: new `SandboxConfig.block_size`; `sandbox.play_plan` alternates conditions round-robin, with blocks cut after resume skips.
+  - Recordings go in `data/v0.5/raw`.
+- `configs/augment/v0.5.yaml`: LeWM/DINO-WM exactly. Original base only; 10 σ=0 copies (+ the exported original = 11 clean) + 10 at each of the 9 noise levels = 101 per demo. Only successful parents.
+- `configs/datasets/v0.5_{normal,heavy,mixed}.yaml` → `pusht_v05_<x>_{train,val}.h5`. val_fraction 0.1, split by demo hash, so all three agree on which demos are val. Recorded timeouts are excluded.
+  - Each file needs ≥ 185 train demos per env (LeWM's count); the one-liner in the spec checks it.
+- **Friction counterpart** (2026-10-26): `configs/suites/v0.5_friction.yaml` (suite `v05friction`) → `configs/generated/v0.5_friction/`; `configs/augment/v0.5_friction.yaml`; `configs/datasets/v0.5_friction_{stock,slippery,mixed}.yaml`; data in `data/v0.5_friction/`.
+  - Envs: `friction-stock` (swm exactly, kinematic agent) vs `friction-slippery` (damping 1 + floor friction 0.1).
+  - Sizes, recipe and splits as for mass. A 1 s push slides on about 71 px after release (stock: 1 px).
+  - The user's sweep with the released LeWM checkpoint: stock 89%, floor friction 0.1 → 43%.
+- **Four floors** (2026-11-01): `configs/suites/v0.5_friction4.yaml` (suite `v05friction4`) → `configs/generated/v0.5_friction4/` adds `medium` (floor 0.25) and `rough` (1.0), both at damping 1, after stock and slippery. That keeps their env_hash and env_ids 0 and 1. It uses the same `output.root`, so resume plays only the new floors' 430 rounds (checked).
+  - `configs/augment/v0.5_friction4.yaml` (`dino_wm_f4`) augments only medium and rough. Recipes refuse an existing output dir, and stock/slippery are already in `dino_wm`.
+  - `configs/datasets/v0.5_friction_{medium,rough,all4}.yaml` read both aug dirs. Stock and slippery val is identical to the two-floor exports (checked).
+- **Eval-only floors** (2026-11-07): `configs/suites/v0.5_friction7.yaml` (suite `v05friction7`) → `configs/generated/v0.5_friction7/`. It adds `icy` 0.05, `slick` 0.15 and `firm` 0.5 (damping 1) as **held-out test envs**, env_id 4–6, 30 rounds each, on seeds 0..29 (the trained floors' layouts). The four trained floors keep their ids and hashes, so resume plays only those 90 rounds (checked).
+  - `holdout` may now be a **list of levels** (`holdout: [icy, slick, firm]`); `heldout_level` raises if a factor holds out several.
+  - Not augmented. `configs/datasets/v0.5_friction_{unseen,icy,slick,firm}.yaml` (`adapt_per_env: 0`) write only `*_test_eval.h5`: every successful recording.
+- **v1 mass** (2026-11-06): `configs/suites/v1_mass.yaml` (suite `v1mass`) → `configs/generated/v1_mass/`. Masses normal 1, medium 3, hefty 5, heavy 10 and superheavy 20 (env_id 0–4), all with `agent_max_force` 20000. 215 rounds each, `max_steps` 3000.
+  - `output.root` is `data/v0.5/raw`, and normal/heavy keep v0.5's values and names, so the 205 v0.5 demos count on resume (checked: 870 rounds left).
+  - Recipe `configs/augment/v1_mass.yaml` (`dino_wm_v1mass`, all five envs, about 107k files). Exports `configs/datasets/v1_mass_{normal,medium,hefty,heavy,superheavy,all}.yaml` → `data/v1_mass/export`.
+  - The `sim.block_mass` range is raised to 0.1–50 (it was an arbitrary 10).
+  - **Physics (measured):** at damping 0, mass only caps push speed at about 200/mass px/s (at force 20000). So mass ≲ 1.5 is identical to stock: you can't degrade performance by making the block lighter.
+- Augment and export should run off iCloud (the cluster): about 43k augmented `.npz` files, and the exports run to tens of GB.
+
 ## Facts for packaging and eval (checked 2026-10-25)
 
 - **swm dataset-driven eval** (`World.evaluate(dataset=..., episodes_idx, start_steps, goal_offset, eval_budget)`, in `world/world.py` at the pinned rev):

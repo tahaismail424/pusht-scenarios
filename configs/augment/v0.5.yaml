@@ -1,0 +1,37 @@
+# v0.5 augmentation: LeWM / DINO-WM's recipe exactly, nothing else.
+#   uv run pts-augment -c configs/augment/v0.5.yaml --workers 16
+#
+# LeWM's pusht_expert_train is 185 human demos x 101 open-loop replays each:
+# 11 clean (sigma ~0) + 10 at each of 0.003 0.005 0.01 0.015 0.02 0.025 0.03
+# 0.07 0.15 (Gaussian noise on the actions), failed replays kept. Here the
+# recorded demo itself is exported too, so 10 sigma=0 copies + the original =
+# 11 clean episodes and 101 episodes per demo, like LeWM. No SE(2), mirror or
+# recolor: the original has none, and v0.5 changes only the mass.
+# Every copy is re-simulated in its own env's physics (heavy copies in heavy).
+#
+# Output: data/v0.5/aug/dino_wm/demos/, ~2 x 215 x 100 = ~43k small .npz files.
+# Write it on the cluster's scratch or another non-iCloud disk, not ~/Desktop.
+
+name: dino_wm
+sources: [data/v0.5/raw]
+suite: configs/generated/v0.5/suite.yaml
+output_root: data/v0.5/aug
+seed: 0
+include_rejected: false
+include_failures: false        # only successful demos are parents (LeWM's 185 all succeeded);
+                               # recorded timeouts are left out of export too
+
+bases:
+  original: true               # no transforms
+
+noise:                         # DINO_WM_NOISE_LEVELS with 10 (not 11) clean copies
+  - [0.0, 10]                  #   + the exported original = 11 clean
+  - [0.003, 10]
+  - [0.005, 10]
+  - [0.01, 10]
+  - [0.015, 10]
+  - [0.02, 10]
+  - [0.025, 10]
+  - [0.03, 10]
+  - [0.07, 10]
+  - [0.15, 10]

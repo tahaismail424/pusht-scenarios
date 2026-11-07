@@ -1,0 +1,29 @@
+# v0.5 friction, Eval-only floor 'firm' (see configs/suites/v0.5_friction7.yaml).
+#
+#   uv run pts-export -c configs/datasets/v0.5_friction_firm.yaml --workers 16
+#
+# Writes <output_root>/pusht_v05_friction_firm_test_eval.h5 (+ .episodes.jsonl,
+# manifest): every successful recording of the floor, no augmented copies, no
+# timeouts. Same columns as the train/val files (variation.sim.floor_friction,
+# variation.sim.damping, env_id, seed), so dataset eval rebuilds each floor.
+# Set splits.adapt_per_env to k to also write a *_test_adapt.h5 holding each
+# floor's first k recordings (by seed) for test-time adaptation instead.
+
+name: pusht_v05_friction_firm
+suite: configs/generated/v0.5_friction7/suite.yaml
+sources: [data/v0.5_friction/raw]
+output_root: data/v0.5_friction/export
+resolution: 224
+seed: 0
+
+select:
+  conditions: [friction-firm]
+  include_rejected: false
+  include_failures: true
+  include_timeouts: false
+  max_noise: null
+
+splits:
+  val_fraction: 0.1           # unused: these floors are test envs
+  adapt_per_env: 0            # all recordings -> *_test_eval.h5
+  test_include_augmented: false

@@ -222,6 +222,49 @@ def test_session_order_and_retry(env):
     assert 'success 4/4' in sandbox.summarize(results)
 
 
+def plan_of(config, skip=None):
+    return [(c.name, i) for c, i in sandbox.play_plan(config, skip)]
+
+
+def test_block_size_interleaves_conditions_round_robin():
+    a, b = Condition('a'), Condition('b', rounds=3)
+    config = SandboxConfig(conditions=[a, b], rounds_per_condition=5, block_size=2)
+    assert plan_of(config) == [('a', 0), ('a', 1), ('b', 0), ('b', 1),
+                               ('a', 2), ('a', 3), ('b', 2), ('a', 4)]
+    config.block_size = None  # one block per condition
+    assert plan_of(config) == [('a', i) for i in range(5)] + [('b', i) for i in range(3)]
+
+
+def test_blocks_are_cut_after_skipping_so_resume_keeps_alternating():
+    config = SandboxConfig(conditions=[Condition('a'), Condition('b', seed=100)],
+                           rounds_per_condition=4, block_size=2)
+    skip = {('a', 0), ('a', 1), ('a', 2)}
+    assert plan_of(config, skip) == [('a', 3), ('b', 0), ('b', 1), ('b', 2), ('b', 3)]
+    skip = {('a', 0), ('b', 100)}
+    assert plan_of(config, skip) == [('a', 1), ('a', 2), ('b', 1), ('b', 2), ('a', 3), ('b', 3)]
+
+
+def test_block_size_follows_shuffled_condition_order():
+    conds = [Condition(n) for n in 'abcd']
+    config = SandboxConfig(conditions=conds, rounds_per_condition=2, block_size=1,
+                           shuffle_conditions=True, shuffle_seed=3)
+    order = [c.name for c in sandbox.condition_order(config)]
+    assert plan_of(config) == [(n, 0) for n in order] + [(n, 1) for n in order]
+
+
+def test_session_plays_interleaved_blocks(env):
+    b = Condition('b', variation=[], variation_values=ON_GOAL.variation_values)
+    config = fast(conditions=[ON_GOAL, b], rounds_per_condition=2, block_size=1)
+    results = sandbox.run_session(config, env=env, device=zero_device(), get_events=scripted([]))
+    assert [(r.condition, r.seed) for r in results] == [
+        ('on_goal', 0), ('b', 0), ('on_goal', 1), ('b', 1)]
+
+
+def test_block_size_must_be_positive():
+    with pytest.raises(ValueError, match='block_size'):
+        sandbox.config_from_dict({'block_size': 0})
+
+
 def test_main_runs_headless(tmp_path, capsys):
     path = tmp_path / 'quick.yaml'
     path.write_text(

@@ -1,0 +1,36 @@
+# v1 mass augmentation: LeWM / DINO-WM's recipe exactly (as configs/augment/v0.5.yaml),
+# for all five masses.
+#   uv run pts-augment -c configs/augment/v1_mass.yaml --workers 16
+#
+# 10 sigma=0 copies + the exported original = 11 clean, + 10 at each of 9 noise
+# levels = 101 episodes per demo; failed replays kept, only successful parents.
+# Each copy is re-simulated at its own env's mass.
+#
+# Output: data/v0.5/aug/dino_wm_v1mass/demos/, ~5 x 215 x 100 = ~107k small .npz
+# files. Mind Grace's 250k file quota (the friction aug dirs are ~86k): if an
+# older v0.5 mass augmentation (data/v0.5/aug/dino_wm) exists there, it is
+# superseded by this one (copies are deterministic, so identical) and can go.
+# Run it on the cluster's scratch, not ~/Desktop.
+
+name: dino_wm_v1mass
+sources: [data/v0.5/raw]
+suite: configs/generated/v1_mass/suite.yaml
+output_root: data/v0.5/aug
+seed: 0
+include_rejected: false
+include_failures: false        # only successful demos are parents
+
+bases:
+  original: true               # no transforms
+
+noise:
+  - [0.0, 10]                  # + the exported original = 11 clean
+  - [0.003, 10]
+  - [0.005, 10]
+  - [0.01, 10]
+  - [0.015, 10]
+  - [0.02, 10]
+  - [0.025, 10]
+  - [0.03, 10]
+  - [0.07, 10]
+  - [0.15, 10]

@@ -18,6 +18,7 @@ from pusht_scenarios.teleop import record, sandbox
 from conftest import MINI_SUITE
 
 V0 = Path(__file__).parents[1] / 'configs' / 'suites' / 'v0.yaml'
+V05 = Path(__file__).parents[1] / 'configs' / 'suites' / 'v0.5.yaml'
 
 
 def spec(**changes):
@@ -47,6 +48,30 @@ def test_v0_records_every_combination():
     for c in rec['conditions']:
         assert 'split' not in c['info'] and 'env_id' not in c['info']  # chosen at export
     assert rec['output']['resume'] is True
+
+
+def test_v05_is_two_train_envs_on_shared_layouts():
+    suite = S.build(S.load_spec(V05))
+    assert [(e.env_id, e.name, e.split) for e in suite.envs] == [
+        (0, 'mass-normal', 'train'), (1, 'mass-heavy', 'train')]
+    assert [e.variation_values for e in suite.envs] == [
+        {'sim.agent_max_force': 20000.0, 'sim.block_mass': 1.0},
+        {'sim.agent_max_force': 20000.0, 'sim.block_mass': 10.0}]
+    rec = S.record_config(suite)
+    assert [(c['rounds'], c['seed']) for c in rec['conditions']] == [(215, 0), (215, 0)]
+    config = record.record_config_from_dict(rec)
+    plan = [(c.name, i) for c, i in sandbox.play_plan(config.sandbox)]
+    assert len(plan) == 430 and config.sandbox.max_steps == 1500
+    first = plan[0][0]
+    assert {n for n, _ in plan[:10]} == {first} and {n for n, _ in plan[10:20]} != {first}
+
+
+def test_train_only_suite_has_no_test_envs():
+    raw = copy.deepcopy(MINI_SUITE)
+    for f in raw['factors'].values():
+        f['holdout'] = 'none'
+    suite = S.build(S.spec_from_dict(raw))
+    assert suite.envs and all(e.split == 'train' for e in suite.envs)
 
 
 def test_record_all_resplit_keeps_names_and_hashes():
@@ -252,9 +277,9 @@ def test_holdout_none_per_factor():
     assert [e.test_kind for e in built.split('test')] == ['single:mass']
 
 
-def test_everything_none_is_an_error():
-    with pytest.raises(ValueError, match='no factor'):
-        S.build(S.apply_overrides(spec(), ['mass=none', 'color=none']))
+def test_everything_none_is_train_only():
+    built = S.build(S.apply_overrides(spec(), ['mass=none', 'color=none']))
+    assert built.split('test') == [] and built.split('train')
     with pytest.raises(ValueError, match='--only'):
         S.apply_overrides(spec(), only='mass')
 
@@ -328,3 +353,23 @@ def test_joint_holdout_roundtrip_and_cli(tmp_path, capsys):
     # recording plan is unchanged: still all 81 combinations
     import yaml as _yaml
     assert len(_yaml.safe_load((tmp_path / 'record.yaml').read_text())['conditions']) == 81
+
+
+def test_holdout_can_list_several_levels():
+    """Eval-only levels (v0.5_friction7): several held-out levels of one
+    factor become test envs after the train envs, which keep their ids/hashes."""
+    levels = {'stock': {}, 'slippery': {'sim.floor_friction': 0.1},
+              'icy': {'sim.floor_friction': 0.05}, 'firm': {'sim.floor_friction': 0.5}}
+    base = S.build(S.spec_from_dict({'name': 'a', 'factors': {'friction': {
+        'levels': {k: levels[k] for k in ('stock', 'slippery')}, 'holdout': 'none'}}}))
+    suite = S.build(S.spec_from_dict({'name': 'b', 'factors': {'friction': {
+        'levels': levels, 'holdout': ['firm', 'icy']}}}))
+    assert [(e.env_id, e.split, e.levels['friction']) for e in suite.envs] == [
+        (0, 'train', 'stock'), (1, 'train', 'slippery'), (2, 'test', 'icy'), (3, 'test', 'firm')]
+    assert [e.env_hash for e in suite.envs[:2]] == [e.env_hash for e in base.envs]
+    with pytest.raises(ValueError, match='several'):
+        suite.spec.factors[0].heldout_level('middle')
+    for bad, msg in ((['nope'], 'unknown'), (list(levels), 'no train level')):
+        with pytest.raises(ValueError, match=msg):
+            S.build(S.spec_from_dict({'name': 'c', 'factors': {'friction': {
+                'levels': levels, 'holdout': bad}}}))

@@ -1,0 +1,33 @@
+# v1 mass all: all five masses together, nothing held out: train on all, val = held-out demos of each mass (split val results by env_id).
+#
+#   uv run pts-export -c configs/datasets/v1_mass_all.yaml --workers 16
+#
+# Writes <output_root>/pusht_v1mass_all_{train,val}.h5 (+ .episodes.jsonl, manifest).
+# Suite configs/generated/v1_mass: env_id 0 normal (mass 1), 1 medium (3),
+# 2 hefty (5), 3 heavy (10), 4 superheavy (20); agent_max_force 20000 throughout.
+# No test files: nothing is held out. val = ~10% of each env's recorded demos
+# with all 101 of their copies (split by demo, never by episode). The split is
+# a hash of (seed, demo id), so every v1_mass file agrees on which demos are val.
+#
+# Every row carries variation.* (sim.block_mass, sim.agent_max_force), so swm's
+# dataset eval replays each val episode at its own mass.
+#
+# Before exporting, check every env has >= 185 train demos (LeWM's count):
+#   uv run python -c "from pusht_scenarios.export import hdf5 as X; from pusht_scenarios.io.collection import DemoIndex as D; s=X.load_spec('configs/datasets/v1_mass_all.yaml'); i=D.scan(*s.sources); [print(k, __import__('collections').Counter(r.meta.condition for r in v if not r.is_derived)) for k, v in X.assign_splits(s, i, X.resolve_envs(s, i)).items() if v]"
+
+name: pusht_v1mass_all
+suite: configs/generated/v1_mass/suite.yaml
+sources: [data/v0.5/raw, data/v0.5/aug/dino_wm_v1mass]
+output_root: data/v1_mass/export
+resolution: 224
+seed: 0
+
+select:
+  conditions: null                 # all five envs
+  include_rejected: false
+  include_failures: true       # failed noisy replays kept, as in LeWM/DINO-WM
+  include_timeouts: false      # recorded demos that timed out are not experts
+  max_noise: null
+
+splits:
+  val_fraction: 0.1

@@ -1,0 +1,52 @@
+# v0.5 friction, eval-only floors: the four trained floors
+# (configs/suites/v0.5_friction4.yaml) plus three floors that are only
+# recorded for evaluation, never trained on or augmented.
+#
+#   uv run pts-suite build configs/suites/v0.5_friction7.yaml --out configs/generated/v0.5_friction7
+#   uv run pts-sandbox -c configs/generated/v0.5_friction7/record.yaml   # warm up
+#   uv run pts-record  -c configs/generated/v0.5_friction7/record.yaml   # record (resumable)
+#
+# The new floors (all damping 1; e = 0.1 / floor friction):
+#   icy:   0.05 (e = 2)     beyond the trained range: more slippery than slippery (0.1)
+#   slick: 0.15 (e ~ 0.67)  between slippery (0.1) and medium (0.25)
+#   firm:  0.5  (e = 0.2)   between medium (0.25) and rough (1.0)
+# They are held-out test envs (env_id 4, 5, 6), 30 rounds each. Exports put
+# their clean successful recordings in *_test_eval.h5, with no augmented
+# copies (configs/datasets/v0.5_friction_unseen*.yaml).
+#
+# No re-recording: the four trained floors keep their level values (same
+# env_hash), their env_ids 0-3 and output.root, so resume counts the 860
+# demos already there and plays only the 90 new rounds.
+#
+# Layouts: the new floors play seeds 0..29, the same start layouts as the
+# trained floors' rounds 0..29. Only the floor is new, as with the existing
+# val sets, whose layouts are trained on under the other floors.
+
+name: v05friction7          # (letters+digits: it goes into session dir names)
+
+record_all: false
+factors:
+  friction:                 # floor (hidden)
+    ordered: true
+    levels:
+      stock:    {}
+      slippery: {sim.damping: 1.0, sim.floor_friction: 0.1}
+      medium:   {sim.damping: 1.0, sim.floor_friction: 0.25}
+      rough:    {sim.damping: 1.0, sim.floor_friction: 1.0}
+      icy:      {sim.damping: 1.0, sim.floor_friction: 0.05}
+      slick:    {sim.damping: 1.0, sim.floor_friction: 0.15}
+      firm:     {sim.damping: 1.0, sim.floor_friction: 0.5}
+    holdout: [icy, slick, firm]   # test envs: env_id 4 icy, 5 slick, 6 firm
+    reference: stock
+
+record:
+  rounds: {train: 215, test: 30}  # train floors are already complete
+  seed: {train: 0, test: 0}       # shared layouts (see above)
+  layouts: shared
+  max_steps: 1500
+  fps: 10
+  hold_steps: 5
+  shuffle_conditions: true
+  block_size: 10
+  device: {gain: 0.35, precision_gain: 0.1, precision_button: rightshoulder, mouse_max: 0.35}
+  output: {root: data/v0.5_friction/raw, save_failures: true, operator: taha, resume: true}
